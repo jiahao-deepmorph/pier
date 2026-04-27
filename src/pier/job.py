@@ -327,7 +327,11 @@ class Job:
     @staticmethod
     async def _cache_tasks(task_configs: list[TaskConfig]):
         """Pre-download git-based tasks before submitting trials."""
-        raise ValueError("Git and package tasks are disabled in this build.")
+        if any(
+            task_config.is_git_task() or task_config.is_package_task()
+            for task_config in task_configs
+        ):
+            raise ValueError("Git and package tasks are disabled in this build.")
 
     async def _on_trial_completed(self, event: TrialHookEvent) -> None:
         """Internal hook to update job stats when a trial completes."""
