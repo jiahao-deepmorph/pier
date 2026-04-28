@@ -499,6 +499,7 @@ class _ModalDinD(_ModalStrategy):
         env._sandbox = await env._create_sandbox(
             block_network=False,
             experimental_options={"enable_docker": True},
+            sandbox_command=None,
         )
 
         # Wait for Docker daemon to be ready inside the sandbox
@@ -1005,8 +1006,17 @@ class ModalEnvironment(BaseEnvironment):
         block_network: bool | None = None,
         cidr_allowlist: list[str] | None = None,
         experimental_options: dict[str, Any] | None = None,
+        sandbox_command: tuple[str, ...] | None = ("sleep", "infinity"),
     ) -> Sandbox:
-        """Create a sandbox with retry logic for transient failures."""
+        """Create a sandbox with retry logic for transient failures.
+
+        Modal's Sandbox inherits the container CMD from `*args`; if omitted, the image
+        must define CMD/ENTRYPOINT. Many benchmark images omit both — pass the default
+        long-running stub (mirror of docker-compose's ``sleep infinity``).
+
+        DinD uses images that already define dockerd — pass ``sandbox_command=None`` to
+        keep the upstream entrypoint/command.
+        """
         if block_network is None:
             block_network = (
                 not self.task_env_config.allow_internet
@@ -1017,7 +1027,10 @@ class ModalEnvironment(BaseEnvironment):
         if experimental_options:
             kwargs["experimental_options"] = experimental_options
 
+        sandbox_args = sandbox_command if sandbox_command is not None else ()
+
         return await Sandbox.create.aio(
+            *sandbox_args,
             app=self._app,
             image=self._image,
             timeout=self._sandbox_timeout,
