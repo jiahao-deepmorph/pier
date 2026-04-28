@@ -1,35 +1,46 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Any
+import json
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
+
+
+class InstallStep(BaseModel):
+    """One install phase (maps to Dockerfile ``USER`` + ``RUN bash -lc …``)."""
+
+    run: str
+    user: Literal["root", "agent"] = "agent"
+    env: dict[str, str] | None = None
 
 
 class AgentInstallSpec(BaseModel):
     agent_name: str
     version: str | None = None
-    root_script: str | None = None
-    user_script: str | None = None
+    steps: list[InstallStep]
     verification_command: str | None = None
     cache_key: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def validate_scripts(self) -> "AgentInstallSpec":
-        if not self.root_script and not self.user_script:
-            raise ValueError("AgentInstallSpec requires root_script or user_script")
+    def _non_empty(self) -> "AgentInstallSpec":
+        if not self.steps:
+            raise ValueError("AgentInstallSpec requires at least one step")
         return self
 
     def fingerprint(self) -> str:
         if self.cache_key:
             return self.cache_key
+        steps_json = json.dumps(
+            [s.model_dump(mode="python", exclude_none=True) for s in self.steps],
+            sort_keys=True,
+        )
         payload = "\n".join(
             [
                 self.agent_name,
                 self.version or "",
-                self.root_script or "",
-                self.user_script or "",
+                steps_json,
                 self.verification_command or "",
             ]
         )

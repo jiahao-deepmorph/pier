@@ -6,11 +6,12 @@ from typing import Any, Literal
 
 from pier.agents.installed.base import (
     BaseInstalledAgent,
-    with_prompt_template,
     CliFlag,
+    with_prompt_template,
 )
 from pier.environments.base import BaseEnvironment
 from pier.models.agent.context import AgentContext
+from pier.models.agent.install import AgentInstallSpec, InstallStep
 from pier.models.agent.name import AgentName
 from pier.models.trajectories import (
     Agent,
@@ -53,37 +54,45 @@ class GeminiCli(BaseInstalledAgent):
     def name() -> str:
         return AgentName.GEMINI_CLI.value
 
-    async def install(self, environment: BaseEnvironment) -> None:
-        await self.exec_as_root(
-            environment,
-            command="apt-get update && apt-get install -y curl",
-            env={"DEBIAN_FRONTEND": "noninteractive"},
-        )
+    def install_spec(self) -> AgentInstallSpec:
         version_spec = f"@{self._version}" if self._version else "@latest"
-        await self.exec_as_agent(
-            environment,
-            command=(
-                "set -euo pipefail; "
-                "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash && "
-                'export NVM_DIR="$HOME/.nvm" && '
-                '\\. "$NVM_DIR/nvm.sh" || true && '
-                "command -v nvm &>/dev/null || { echo 'Error: NVM failed to load' >&2; exit 1; } && "
-                "nvm install 22 && npm -v && "
-                f"npm install -g @google/gemini-cli{version_spec}"
-            ),
+        root_run = "apt-get update && apt-get install -y curl"
+        agent_run = (
+            "set -euo pipefail; "
+            "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash && "
+            'export NVM_DIR="$HOME/.nvm" && '
+            '\\. "$NVM_DIR/nvm.sh" || true && '
+            "command -v nvm &>/dev/null || { echo 'Error: NVM failed to load' >&2; exit 1; } && "
+            "nvm install 22 && npm -v && "
+            f"npm install -g @google/gemini-cli{version_spec}"
         )
-        await self.exec_as_agent(
-            environment,
-            command=(
-                "mkdir -p ~/.gemini && "
-                "cat > ~/.gemini/settings.json << 'SETTINGS'\n"
-                '{\n  "experimental": {\n    "skills": true\n  }\n}\n'
-                "SETTINGS"
-            ),
+        gemini_settings_run = (
+            "mkdir -p ~/.gemini && "
+            "cat > ~/.gemini/settings.json << 'SETTINGS'\n"
+            '{\n  "experimental": {\n    "skills": true\n  }\n}\n'
+            "SETTINGS"
         )
-        await self.exec_as_agent(
-            environment,
-            command=". ~/.nvm/nvm.sh && gemini --version",
+
+        return AgentInstallSpec(
+            agent_name=self.name(),
+            version=self._version,
+            steps=[
+                InstallStep(
+                    user="root",
+                    env={"DEBIAN_FRONTEND": "noninteractive"},
+                    run=root_run,
+                ),
+                InstallStep(
+                    user="agent",
+                    run=agent_run,
+                ),
+                InstallStep(
+                    user="agent",
+                    run=gemini_settings_run,
+                ),
+                InstallStep(user="agent", run=". ~/.nvm/nvm.sh && gemini --version"),
+            ],
+            verification_command=self.get_version_command(),
         )
 
     def _save_image(

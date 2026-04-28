@@ -14,6 +14,7 @@ from pier.agents.installed.base import (
 from pier.agents.utils import get_api_key_var_names_from_model_name
 from pier.environments.base import BaseEnvironment
 from pier.models.agent.context import AgentContext
+from pier.models.agent.install import AgentInstallSpec, InstallStep
 from pier.models.agent.name import AgentName
 from pier.models.trajectories import (
     Agent,
@@ -370,38 +371,43 @@ class MiniSweAgent(BaseInstalledAgent):
         match = re.search(r"(\d+\.\d+\S*)", stdout)
         return match.group(1) if match else stdout.strip()
 
-    async def install(self, environment: BaseEnvironment) -> None:
-        # Install build tools (multi-OS)
-        await self.exec_as_root(
-            environment,
-            command=(
-                "if command -v apt-get &>/dev/null; then"
-                "  apt-get update && apt-get install -y curl build-essential git;"
-                " elif command -v apk &>/dev/null; then"
-                "  apk add --no-cache curl bash build-base git python3 py3-pip;"
-                " elif command -v yum &>/dev/null; then"
-                "  yum install -y curl git gcc make;"
-                " elif command -v dnf &>/dev/null; then"
-                "  dnf install -y curl git gcc make;"
-                " else"
-                '  echo "Warning: No known package manager found, assuming build tools are available" >&2;'
-                " fi"
-            ),
-            env={"DEBIAN_FRONTEND": "noninteractive"},
-        )
+    def install_spec(self) -> AgentInstallSpec:
         version_spec = f"=={self._version}" if self._version else ""
-        await self.exec_as_agent(
-            environment,
-            command=(
-                "set -euo pipefail; "
-                "curl -LsSf https://astral.sh/uv/0.7.13/install.sh | sh && "
-                'if ! grep -q \'export PATH="$HOME/.local/bin:$PATH"\' "$HOME/.bashrc" 2>/dev/null; then'
-                '  echo \'export PATH="$HOME/.local/bin:$PATH"\' >> "$HOME/.bashrc";'
-                " fi && "
-                'source "$HOME/.local/bin/env" && '
-                f"uv tool install mini-swe-agent{version_spec} && "
-                "mini-swe-agent --help"
-            ),
+        root_run = (
+            "if command -v apt-get &>/dev/null; then"
+            "  apt-get update && apt-get install -y curl build-essential git;"
+            " elif command -v apk &>/dev/null; then"
+            "  apk add --no-cache curl bash build-base git python3 py3-pip;"
+            " elif command -v yum &>/dev/null; then"
+            "  yum install -y curl git gcc make;"
+            " elif command -v dnf &>/dev/null; then"
+            "  dnf install -y curl git gcc make;"
+            " else"
+            '  echo "Warning: No known package manager found, assuming build tools are available" >&2;'
+            " fi"
+        )
+        agent_run = (
+            "set -euo pipefail; "
+            "curl -LsSf https://astral.sh/uv/0.7.13/install.sh | sh && "
+            'if ! grep -q \'export PATH="$HOME/.local/bin:$PATH"\' "$HOME/.bashrc" 2>/dev/null; then'
+            '  echo \'export PATH="$HOME/.local/bin:$PATH"\' >> "$HOME/.bashrc";'
+            " fi && "
+            'source "$HOME/.local/bin/env" && '
+            f"uv tool install mini-swe-agent{version_spec} && "
+            "mini-swe-agent --help"
+        )
+        return AgentInstallSpec(
+            agent_name=self.name(),
+            version=self._version,
+            steps=[
+                InstallStep(
+                    user="root",
+                    env={"DEBIAN_FRONTEND": "noninteractive"},
+                    run=root_run,
+                ),
+                InstallStep(user="agent", run=agent_run),
+            ],
+            verification_command=self.get_version_command(),
         )
 
     @property

@@ -13,7 +13,7 @@ from pier.agents.installed.base import (
 )
 from pier.environments.base import BaseEnvironment
 from pier.models.agent.context import AgentContext
-from pier.models.agent.install import AgentInstallSpec
+from pier.models.agent.install import AgentInstallSpec, InstallStep
 from pier.models.agent.network import NetworkAllowlist
 from pier.models.agent.name import AgentName
 from pier.models.trajectories import (
@@ -112,7 +112,7 @@ class ClaudeCode(BaseInstalledAgent):
     def install_spec(self) -> AgentInstallSpec:
         version_flag = f" {self._version}" if self._version else ""
         package_version = f"@{self._version}" if self._version else ""
-        root_script = (
+        root_run = (
             "if command -v apk &> /dev/null; then"
             "  apk add --no-cache curl bash nodejs npm;"
             " elif command -v apt-get &> /dev/null; then"
@@ -123,7 +123,7 @@ class ClaudeCode(BaseInstalledAgent):
             '  echo "Warning: No known package manager found, assuming curl is available" >&2;'
             " fi"
         )
-        user_script = (
+        agent_run = (
             "set -euo pipefail; "
             "if command -v apk &> /dev/null; then"
             f"  npm install -g @anthropic-ai/claude-code{package_version};"
@@ -138,8 +138,14 @@ class ClaudeCode(BaseInstalledAgent):
         return AgentInstallSpec(
             agent_name=self.name(),
             version=self._version,
-            root_script=root_script,
-            user_script=user_script,
+            steps=[
+                InstallStep(
+                    user="root",
+                    env={"DEBIAN_FRONTEND": "noninteractive"},
+                    run=root_run,
+                ),
+                InstallStep(user="agent", run=agent_run),
+            ],
             verification_command=self.get_version_command(),
         )
 
@@ -154,40 +160,6 @@ class ClaudeCode(BaseInstalledAgent):
                 return NetworkAllowlist(domains=[parsed.hostname])
 
         return NetworkAllowlist(domains=["api.anthropic.com"])
-
-    async def install(self, environment: BaseEnvironment) -> None:
-        # Install system packages (root)
-        await self.exec_as_root(
-            environment,
-            command=(
-                "if command -v apk &> /dev/null; then"
-                "  apk add --no-cache curl bash nodejs npm;"
-                " elif command -v apt-get &> /dev/null; then"
-                "  apt-get update && apt-get install -y curl;"
-                " elif command -v yum &> /dev/null; then"
-                "  yum install -y curl;"
-                " else"
-                '  echo "Warning: No known package manager found, assuming curl is available" >&2;'
-                " fi"
-            ),
-            env={"DEBIAN_FRONTEND": "noninteractive"},
-        )
-        # Install claude-code (as default user)
-        version_flag = f" {self._version}" if self._version else ""
-        await self.exec_as_agent(
-            environment,
-            command=(
-                "set -euo pipefail; "
-                "if command -v apk &> /dev/null; then"
-                f"  npm install -g @anthropic-ai/claude-code{'@' + self._version if self._version else ''};"
-                " else"
-                f"  curl -fsSL https://claude.ai/install.sh | bash -s --{version_flag};"
-                " fi && "
-                "echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.bashrc && "
-                'export PATH="$HOME/.local/bin:$PATH" && '
-                "claude --version"
-            ),
-        )
 
     def _get_session_dir(self) -> Path | None:
         """Identify the Claude session directory containing the primary JSONL log"""

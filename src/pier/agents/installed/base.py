@@ -10,6 +10,7 @@ if TYPE_CHECKING:
 
 from pier.agents.base import BaseAgent
 from pier.environments.base import BaseEnvironment
+from pier.models.agent.install import AgentInstallSpec
 from pier.utils.env import parse_bool_env_value
 from pier.utils.templating import render_prompt_template
 
@@ -374,13 +375,16 @@ class BaseInstalledAgent(BaseAgent, ABC):
         return instruction
 
     @abstractmethod
-    async def install(self, environment: BaseEnvironment) -> None:
-        """Install the agent in the environment.
+    def install_spec(self) -> AgentInstallSpec:
+        """Declarative install steps executed at setup and inlined into Dockerfile builds."""
 
-        Use ``exec_as_root`` for system packages and ``exec_as_agent``
-        for user-level installs.
-        """
-        pass
+    async def install(self, environment: BaseEnvironment) -> None:
+        """Run each step from :meth:`install_spec` with matching privilege."""
+        for step in self.install_spec().steps:
+            if step.user == "root":
+                await self.exec_as_root(environment, command=step.run, env=step.env)
+            else:
+                await self.exec_as_agent(environment, command=step.run, env=step.env)
 
     async def setup(self, environment: BaseEnvironment) -> None:
         await environment.exec(command="mkdir -p /installed-agent", user="root")

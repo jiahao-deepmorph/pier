@@ -12,6 +12,7 @@ from pier.agents.installed.base import (
 )
 from pier.environments.base import BaseEnvironment
 from pier.models.agent.context import AgentContext
+from pier.models.agent.install import AgentInstallSpec, InstallStep
 from pier.models.agent.name import AgentName
 from pier.models.trajectories import (
     Agent,
@@ -78,25 +79,32 @@ class OpenCode(BaseInstalledAgent):
     def get_version_command(self) -> str | None:
         return ". ~/.nvm/nvm.sh; opencode --version"
 
-    async def install(self, environment: BaseEnvironment) -> None:
-        await self.exec_as_root(
-            environment,
-            command="apt-get update && apt-get install -y curl",
-            env={"DEBIAN_FRONTEND": "noninteractive"},
-        )
+    def install_spec(self) -> AgentInstallSpec:
         version_spec = f"@{self._version}" if self._version else "@latest"
-        await self.exec_as_agent(
-            environment,
-            command=(
-                "set -euo pipefail; "
-                "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash && "
-                'export NVM_DIR="$HOME/.nvm" && '
-                '\\. "$NVM_DIR/nvm.sh" || true && '
-                "command -v nvm &>/dev/null || { echo 'Error: NVM failed to load' >&2; exit 1; } && "
-                "nvm install 22 && npm -v && "
-                f"npm i -g opencode-ai{version_spec} && "
-                "opencode --version"
-            ),
+        return AgentInstallSpec(
+            agent_name=self.name(),
+            version=self._version,
+            steps=[
+                InstallStep(
+                    user="root",
+                    env={"DEBIAN_FRONTEND": "noninteractive"},
+                    run="apt-get update && apt-get install -y curl",
+                ),
+                InstallStep(
+                    user="agent",
+                    run=(
+                        "set -euo pipefail; "
+                        "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash && "
+                        'export NVM_DIR="$HOME/.nvm" && '
+                        '\\. "$NVM_DIR/nvm.sh" || true && '
+                        "command -v nvm &>/dev/null || { echo 'Error: NVM failed to load' >&2; exit 1; } && "
+                        "nvm install 22 && npm -v && "
+                        f"npm i -g opencode-ai{version_spec} && "
+                        "opencode --version"
+                    ),
+                ),
+            ],
+            verification_command=self.get_version_command(),
         )
 
     @staticmethod

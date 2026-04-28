@@ -5,7 +5,7 @@ import secrets
 import shlex
 from pathlib import Path
 
-from pier.models.agent.install import AgentInstallSpec
+from pier.models.agent.install import AgentInstallSpec, InstallStep
 from pier.models.agent.network import NetworkAllowlist
 
 AGENT_INSTALL_DIR = ".pier-agent-install"
@@ -17,25 +17,28 @@ def docker_run_command(script: str) -> str:
     return "RUN " + json.dumps(["/bin/bash", "-lc", script])
 
 
+def _run_with_step_env(step: InstallStep) -> str:
+    if not step.env:
+        return step.run
+    exports = "".join(
+        f"export {key}={shlex.quote(value)}; " for key, value in step.env.items()
+    )
+    return exports + step.run
+
+
 def dockerfile_install_commands(
     install: AgentInstallSpec,
     *,
     user: str | int | None,
 ) -> list[str]:
     commands: list[str] = []
-    if install.root_script:
+    docker_agent_user = "root" if user is None else str(user)
+    for step in install.steps:
+        docker_user = "root" if step.user == "root" else docker_agent_user
         commands.extend(
             [
-                "USER root",
-                docker_run_command(install.root_script),
-            ]
-        )
-    if install.user_script:
-        install_user = "root" if user is None else str(user)
-        commands.extend(
-            [
-                f"USER {install_user}",
-                docker_run_command(install.user_script),
+                f"USER {docker_user}",
+                docker_run_command(_run_with_step_env(step)),
             ]
         )
     return commands
