@@ -648,6 +648,18 @@ def start(
             show_default=False,
         ),
     ] = None,
+    sample_seed: Annotated[
+        int | None,
+        Option(
+            "--sample-seed",
+            help=(
+                "Seed for deterministic random task sampling/order. "
+                "Applied after include/exclude filters and before --n-tasks."
+            ),
+            rich_help_panel="Dataset",
+            show_default=False,
+        ),
+    ] = None,
     artifact_paths: Annotated[
         list[str] | None,
         Option(
@@ -812,6 +824,7 @@ def start(
                     task_names=dataset_task_names,
                     exclude_task_names=dataset_exclude_task_names,
                     n_tasks=n_tasks,
+                    sample_seed=sample_seed,
                 )
             ]
 
@@ -819,6 +832,7 @@ def start(
         dataset_task_names is not None
         or dataset_exclude_task_names is not None
         or n_tasks is not None
+        or sample_seed is not None
     ):
         raise ValueError("Cannot specify local dataset filters without --path.")
 

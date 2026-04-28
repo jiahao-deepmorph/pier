@@ -42,6 +42,10 @@ class DatasetConfig(BaseModel):
         default=None,
         description="Maximum number of tasks to include from this dataset. Applied after task_names/exclude_task_names filtering.",
     )
+    sample_seed: int | None = Field(
+        default=None,
+        description="Seed for deterministic random task sampling/order. Applied after task_names/exclude_task_names filtering and before n_tasks.",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -99,7 +103,7 @@ class DatasetConfig(BaseModel):
     def _filter_task_ids(
         self, task_ids: list[LocalTaskId | GitTaskId | PackageTaskId]
     ) -> list[LocalTaskId | GitTaskId | PackageTaskId]:
-        filtered_ids = task_ids
+        filtered_ids = list(task_ids)
         if self.task_names:
             filtered_ids = [
                 task_id
@@ -126,6 +130,9 @@ class DatasetConfig(BaseModel):
                     for pattern_id in self.exclude_task_names
                 )
             ]
+
+        if self.sample_seed is not None:
+            random.Random(self.sample_seed).shuffle(filtered_ids)
 
         if self.n_tasks is not None:
             filtered_ids = filtered_ids[: self.n_tasks]
