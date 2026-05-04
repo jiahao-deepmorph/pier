@@ -25,18 +25,14 @@ _F = Any  # Use Any to keep the decorator signature-transparent to type checkers
 
 
 def with_prompt_template(fn: _F) -> _F:
-    """Decorator for ``run()`` that renders the instruction and preflights the
-    backend.
+    """Decorator for ``run()`` that applies prompt-template rendering.
 
-    Runs, in order:
+    Usage::
 
-    1. Prompt-template rendering of ``instruction``.
-    2. :meth:`BaseAgent.preflight_backend`, using the agent's ``_get_env`` so
-       ``extra_env`` wins over ``os.environ``.
-
-    Placing preflight here means every installed agent gets credential
-    validation right before running, without each ``run()`` having to
-    remember to call it — and construction stays side-effect free.
+        @with_prompt_template
+        async def run(self, instruction, environment, context):
+            # instruction is already rendered through the prompt template
+            ...
     """
 
     @functools.wraps(fn)
@@ -44,7 +40,6 @@ def with_prompt_template(fn: _F) -> _F:
         self: BaseInstalledAgent, instruction: str, *args: Any, **kwargs: Any
     ) -> None:
         instruction = self.render_instruction(instruction)
-        self.preflight_backend(self._get_env)
         return await fn(self, instruction, *args, **kwargs)
 
     return wrapper
@@ -239,6 +234,25 @@ class BaseInstalledAgent(BaseAgent, ABC):
     def resolve_env_vars(self) -> dict[str, str]:
         """Public access to resolved env vars dict."""
         return dict(self._resolved_env_vars)
+
+    def build_process_env(
+        self,
+        base: dict[str, str | None] | None = None,
+        *,
+        include_resolved_env: bool = True,
+    ) -> dict[str, str]:
+        """Build runtime env with explicit agent.env values included.
+
+        ``agent.env`` is the simple escape hatch for provider gateways, custom
+        base URLs, and tool-specific environment variables. Agent code can pass
+        its normal defaults as ``base``; job-level env then overrides those
+        defaults, and declarative EnvVar kwargs override both.
+        """
+        env = {key: value for key, value in (base or {}).items() if value is not None}
+        env.update(self._extra_env)
+        if include_resolved_env:
+            env.update(self._resolved_env_vars)
+        return env
 
     def _get_env(self, key: str) -> str | None:
         """Get env var from extra_env (priority) or os.environ."""

@@ -1,17 +1,8 @@
 import json
 import shlex
-from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
-from pier.agents.backends import (
-    AgentBackend,
-    BackendContext,
-    backend_registry,
-    collect_env,
-    require_env,
-    strip_model_namespace,
-)
 from pier.agents.installed.base import (
     BaseInstalledAgent,
     CliFlag,
@@ -21,7 +12,6 @@ from pier.environments.base import BaseEnvironment
 from pier.models.agent.context import AgentContext
 from pier.models.agent.install import AgentInstallSpec, InstallStep
 from pier.models.agent.name import AgentName
-from pier.models.agent.network import NetworkAllowlist
 from pier.models.trajectories import (
     Agent,
     FinalMetrics,
@@ -37,165 +27,14 @@ from pier.utils.env import parse_bool_env_value
 from pier.utils.trajectory_utils import format_trajectory_json
 
 
-@dataclass(frozen=True)
-class CodexConfigFragment:
-    """Contribution a Codex backend makes to the sandbox's Codex config.
-
-    ``toml`` is an optional snippet appended to ``$CODEX_HOME/config.toml``.
-    ``env`` is env vars that must be exported for the snippet to resolve
-    (e.g. ``OPENAI_BASE_URL`` referenced with ``${OPENAI_BASE_URL}``).
-    """
-
-    toml: str = ""
-    env: dict[str, str] | None = None
-
-
-class CodexBackend(AgentBackend):
-    """Codex-specific backend surface.
-
-    Adds :meth:`config_fragment`, which every Codex backend must implement,
-    so Codex's ``run()`` can compose config.toml without ``getattr`` probes.
-    """
-
-    def config_fragment(self, ctx: BackendContext) -> CodexConfigFragment:
-        """Return a ``config.toml`` fragment and any env vars it references."""
-        return CodexConfigFragment()
-
-
-class CodexOpenAIBackend(CodexBackend):
-    """Codex talking to api.openai.com (or an OpenAI-compatible base URL)."""
-
-    name = "openai"
-
-    @staticmethod
-    def auth_json_path_from_env(get_env) -> Path | None:
-        """Resolve a local ``auth.json`` path if the user opted into one.
-
-        Precedence:
-          1. ``CODEX_AUTH_JSON_PATH`` points to a file → use that.
-          2. ``CODEX_FORCE_AUTH_JSON`` truthy → use ``~/.codex/auth.json``.
-          3. Otherwise ``None`` (fall back to ``OPENAI_API_KEY``).
-        """
-        explicit = get_env("CODEX_AUTH_JSON_PATH")
-        if explicit:
-            p = Path(explicit)
-            if not p.is_file():
-                raise ValueError(
-                    f"CODEX_AUTH_JSON_PATH points to non-existent file: {explicit}"
-                )
-            return p
-
-        if parse_bool_env_value(
-            get_env("CODEX_FORCE_AUTH_JSON"),
-            name="CODEX_FORCE_AUTH_JSON",
-            default=False,
-        ):
-            default = Path.home() / ".codex" / "auth.json"
-            if not default.is_file():
-                raise ValueError(
-                    f"CODEX_FORCE_AUTH_JSON is set but {default} does not exist"
-                )
-            return default
-        return None
-
-    def validate(self, ctx: BackendContext) -> None:
-        if ctx.model_name:
-            strip_model_namespace(ctx.model_name, "openai")
-        # Only require OPENAI_API_KEY when we're *not* going to provide an
-        # explicit auth.json (which carries its own credentials).
-        if self.auth_json_path_from_env(ctx.get_env) is None:
-            require_env(
-                backend_label=f"{ctx.agent_name} backend {self.name!r}",
-                get_env=ctx.get_env,
-                any_of=(("OPENAI_API_KEY",),),
-            )
-
-    def build_env(self, ctx: BackendContext) -> dict[str, str]:
-        # OPENAI_API_KEY is only needed when we fall back to the inline
-        # auth.json path (which references ${OPENAI_API_KEY}). If the user
-        # supplied auth.json directly, we don't need the key in env.
-        if self.auth_json_path_from_env(ctx.get_env) is not None:
-            return {}
-        return collect_env(ctx.get_env, ("OPENAI_API_KEY",))
-
-    def runtime_model_name(self, ctx: BackendContext) -> str | None:
-        if ctx.runtime_model_name:
-            return ctx.runtime_model_name
-        if not ctx.model_name:
-            return None
-        return strip_model_namespace(ctx.model_name, "openai")
-
-    def config_fragment(self, ctx: BackendContext) -> CodexConfigFragment:
-        # codex 0.118.0 only honors openai_base_url from config.toml, not env.
-        base_url = ctx.get_env("OPENAI_BASE_URL")
-        if not base_url:
-            return CodexConfigFragment()
-        return CodexConfigFragment(
-            toml=(
-                '\ncat >>"$CODEX_HOME/config.toml" <<TOML\n'
-                'openai_base_url = "${OPENAI_BASE_URL}"\n'
-                "TOML"
-            ),
-            env={"OPENAI_BASE_URL": base_url},
-        )
-
-
-class CodexRespanBackend(CodexBackend):
-    """Codex routed through the Respan gateway."""
-
-    name = "respan"
-    _STREAM_IDLE_TIMEOUT_MS = 60 * 60 * 1000
-    _STREAM_MAX_RETRIES = 30
-
-    def validate(self, ctx: BackendContext) -> None:
-        # Respan runs with full provider/model names so Codex forwards them
-        # to the gateway verbatim — do not strip the namespace here.
-        require_env(
-            backend_label=f"{ctx.agent_name} backend {self.name!r}",
-            get_env=ctx.get_env,
-            any_of=(("RESPAN_API_KEY",),),
-        )
-
-    def build_env(self, ctx: BackendContext) -> dict[str, str]:
-        return collect_env(ctx.get_env, ("RESPAN_API_KEY",))
-
-    def runtime_model_name(self, ctx: BackendContext) -> str | None:
-        # Keep the full provider-prefixed id; Respan routes on it.
-        return ctx.runtime_model_name or ctx.model_name
-
-    def config_fragment(self, ctx: BackendContext) -> CodexConfigFragment:
-        model = self.runtime_model_name(ctx) or ""
-        return CodexConfigFragment(
-            toml=(
-                '\ncat >>"$CODEX_HOME/config.toml" <<TOML\n'
-                f'model = "{model}"\n'
-                'model_provider = "respan"\n'
-                "\n[model_providers.respan]\n"
-                'name = "Respan Gateway"\n'
-                'base_url = "https://endpoint.respan.ai/api/"\n'
-                'wire_api = "responses"\n'
-                'env_key = "RESPAN_API_KEY"\n'
-                f"stream_idle_timeout_ms = {self._STREAM_IDLE_TIMEOUT_MS}\n"
-                f"stream_max_retries = {self._STREAM_MAX_RETRIES}\n"
-                "TOML"
-            ),
-            env={"RESPAN_API_KEY": ctx.get_env("RESPAN_API_KEY") or ""},
-        )
-
-    def network_allowlist(self) -> NetworkAllowlist:
-        return NetworkAllowlist(domains=["endpoint.respan.ai"])
-
-
 class Codex(BaseInstalledAgent):
     """
     The Codex agent uses OpenAI's Codex CLI tool to solve tasks.
     """
 
     SUPPORTS_ATIF: bool = True
-    DEFAULT_BACKEND = "openai"
-    BACKENDS = backend_registry(CodexOpenAIBackend(), CodexRespanBackend())
     _OUTPUT_FILENAME = "codex.txt"
-    _REMOTE_CODEX_HOME = EnvironmentPaths.agent_dir / "codex-home"
+    _REMOTE_CODEX_HOME = PurePosixPath("/tmp/codex-home")
     _REMOTE_CODEX_SECRETS_DIR = PurePosixPath("/tmp/codex-secrets")
 
     CLI_FLAGS = [
@@ -214,6 +53,20 @@ class Codex(BaseInstalledAgent):
             format="-c model_reasoning_summary={value}",
         ),
     ]
+
+    def __init__(
+        self,
+        *args,
+        command_model_name: str | None = None,
+        config_toml: str | None = None,
+        config_toml_file: str | None = None,
+        **kwargs,
+    ):
+        self._command_model_name = command_model_name
+        self._config_toml = config_toml
+        if config_toml_file:
+            self._config_toml = Path(config_toml_file).read_text()
+        super().__init__(*args, **kwargs)
 
     @staticmethod
     def name() -> str:
@@ -766,43 +619,62 @@ class Codex(BaseInstalledAgent):
         escaped_config = shlex.quote("\n".join(lines))
         return f'echo {escaped_config} >> "$CODEX_HOME/config.toml"'
 
-    def _codex_backend(self) -> CodexBackend:
-        backend = self.require_backend_spec()
-        assert isinstance(backend, CodexBackend), (
-            f"Codex backend {backend.name!r} must subclass CodexBackend"
-        )
-        return backend
+    def _resolve_auth_json_path(self) -> Path | None:
+        """Resolve which auth.json to inject, if any.
+
+        Defaults to None (OPENAI_API_KEY auth). Opt into auth.json auth via:
+          - CODEX_AUTH_JSON_PATH=<path> → use that specific file
+          - CODEX_FORCE_AUTH_JSON=<truthy> → use ~/.codex/auth.json
+        """
+        explicit = self._get_env("CODEX_AUTH_JSON_PATH")
+        if explicit:
+            p = Path(explicit)
+            if not p.is_file():
+                raise ValueError(
+                    f"CODEX_AUTH_JSON_PATH points to non-existent file: {explicit}"
+                )
+            return p
+
+        if parse_bool_env_value(
+            self._get_env("CODEX_FORCE_AUTH_JSON"),
+            name="CODEX_FORCE_AUTH_JSON",
+            default=False,
+        ):
+            default = Path.home() / ".codex" / "auth.json"
+            if not default.is_file():
+                raise ValueError(
+                    f"CODEX_FORCE_AUTH_JSON is set but {default} does not exist"
+                )
+            return default
+
+        return None
 
     @with_prompt_template
     async def run(
         self, instruction: str, environment: BaseEnvironment, context: AgentContext
     ) -> None:
         escaped_instruction = shlex.quote(instruction)
-        backend = self._codex_backend()
-        ctx = self.backend_context(self._get_env)
 
-        model = backend.runtime_model_name(ctx)
-        if not model:
+        if not self.model_name:
             raise ValueError("Model name is required")
 
+        model = self._command_model_name or self.model_name.split("/")[-1]
+
+        # Build command with optional CLI config flags from descriptors.
         cli_flags = self.build_cli_flags()
         cli_flags_arg = (cli_flags + " ") if cli_flags else ""
 
-        # Auth resolution for the OpenAI backend:
+        # Auth resolution:
         #   1. CODEX_AUTH_JSON_PATH=<path> → use that specific auth.json file
         #   2. CODEX_FORCE_AUTH_JSON=<truthy> → use ~/.codex/auth.json
-        #   3. Default: synthesize auth.json from OPENAI_API_KEY
-        # Respan doesn't use auth.json; the Codex CLI reads RESPAN_API_KEY
-        # through ``env_key`` declared in the config.toml fragment below.
-        auth_json_path: Path | None = None
-        if isinstance(backend, CodexOpenAIBackend):
-            auth_json_path = backend.auth_json_path_from_env(self._get_env)
+        #   3. Default: use OPENAI_API_KEY
+        auth_json_path = self._resolve_auth_json_path()
 
         remote_codex_home = self._REMOTE_CODEX_HOME.as_posix()
         remote_secrets_dir = self._REMOTE_CODEX_SECRETS_DIR.as_posix()
         remote_auth_path = (self._REMOTE_CODEX_SECRETS_DIR / "auth.json").as_posix()
 
-        process_env: dict[str, str] = {"CODEX_HOME": remote_codex_home}
+        env = self.build_process_env({"CODEX_HOME": remote_codex_home})
 
         await self.exec_as_agent(
             environment,
@@ -810,10 +682,8 @@ class Codex(BaseInstalledAgent):
                 f'mkdir -p "$CODEX_HOME" {shlex.quote(remote_secrets_dir)} '
                 f"{shlex.quote(EnvironmentPaths.agent_dir.as_posix())}"
             ),
-            env=process_env,
+            env=env,
         )
-
-        process_env.update(backend.build_env(ctx))
 
         if auth_json_path:
             self.logger.debug("Codex auth: using auth.json from %s", auth_json_path)
@@ -827,21 +697,34 @@ class Codex(BaseInstalledAgent):
             setup_command = (
                 f'ln -sf {shlex.quote(remote_auth_path)} "$CODEX_HOME/auth.json"\n'
             )
-        elif isinstance(backend, CodexOpenAIBackend):
+        else:
             self.logger.debug("Codex auth: using OPENAI_API_KEY")
+            env.setdefault("OPENAI_API_KEY", self._get_env("OPENAI_API_KEY") or "")
             setup_command = (
                 f"cat >{shlex.quote(remote_auth_path)} <<EOF\n"
                 '{\n  "OPENAI_API_KEY": "${OPENAI_API_KEY}"\n}\nEOF\n'
                 f"ln -sf {shlex.quote(remote_auth_path)} "
                 '"$CODEX_HOME/auth.json"\n'
             )
-        else:
-            setup_command = ""
 
-        fragment = backend.config_fragment(ctx)
-        if fragment.env:
-            process_env.update(fragment.env)
-        setup_command += fragment.toml
+        if openai_base_url := self._get_env("OPENAI_BASE_URL"):
+            env["OPENAI_BASE_URL"] = openai_base_url
+
+        # codex 0.118.0 only honors openai_base_url from config.toml, not the env var.
+        config_toml_block = ""
+        if openai_base_url:
+            config_toml_block = (
+                '\ncat >>"$CODEX_HOME/config.toml" <<TOML\n'
+                'openai_base_url = "${OPENAI_BASE_URL}"\n'
+                "TOML"
+            )
+        if self._config_toml:
+            escaped_toml = shlex.quote(self._config_toml)
+            config_toml_block += (
+                f'\nprintf "%s\\n" {escaped_toml} >> "$CODEX_HOME/config.toml"\n'
+            )
+
+        setup_command += config_toml_block
 
         skills_command = self._build_register_skills_command()
         if skills_command:
@@ -855,7 +738,7 @@ class Codex(BaseInstalledAgent):
             await self.exec_as_agent(
                 environment,
                 command=setup_command,
-                env=process_env,
+                env=env,
             )
         try:
             await self.exec_as_agent(
@@ -875,7 +758,7 @@ class Codex(BaseInstalledAgent):
                         EnvironmentPaths.agent_dir / self._OUTPUT_FILENAME
                     }"
                 ),
-                env=process_env,
+                env=env,
             )
         finally:
             try:
@@ -892,7 +775,7 @@ class Codex(BaseInstalledAgent):
                         }\n'
                         "fi"
                     ),
-                    env=process_env,
+                    env=env,
                 )
             except Exception:
                 pass
@@ -901,7 +784,7 @@ class Codex(BaseInstalledAgent):
                 await self.exec_as_agent(
                     environment,
                     command=f'rm -rf {shlex.quote(remote_secrets_dir)} "$CODEX_HOME"',
-                    env=process_env,
+                    env=env,
                 )
             except Exception:
                 pass

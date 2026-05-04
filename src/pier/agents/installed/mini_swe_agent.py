@@ -5,27 +5,16 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from pier.agents.backends import (
-    AgentBackend,
-    BackendContext,
-    backend_registry,
-    require_env,
-    split_model_name,
-)
 from pier.agents.installed.base import (
     BaseInstalledAgent,
-    CliFlag,
     with_prompt_template,
+    CliFlag,
 )
-from pier.agents.litellm import (
-    auth_alternatives_for_model,
-    passthrough_env_for_model,
-)
+from pier.agents.utils import get_api_key_var_names_from_model_name
 from pier.environments.base import BaseEnvironment
 from pier.models.agent.context import AgentContext
 from pier.models.agent.install import AgentInstallSpec, InstallStep
 from pier.models.agent.name import AgentName
-from pier.models.agent.network import NetworkAllowlist
 from pier.models.trajectories import (
     Agent,
     FinalMetrics,
@@ -336,109 +325,12 @@ def convert_and_save_trajectory(
         raise
 
 
-class MiniSweBackend(AgentBackend):
-    """mini-swe-agent backend surface."""
-
-    def config_flags(self, ctx: BackendContext) -> str:
-        """Return backend-specific ``mini-swe-agent -c`` overrides."""
-        return ""
-
-
-class MiniSweNativeBackend(MiniSweBackend):
-    """Pass ``model_name`` straight to LiteLLM and forward provider env vars."""
-
-    name = "native"
-
-    def validate(self, ctx: BackendContext) -> None:
-        if not ctx.model_name:
-            raise ValueError(
-                f"Model name is required for {ctx.agent_name} backend {self.name!r}"
-            )
-        # Enforce provider/model format so downstream LiteLLM lookups work.
-        split_model_name(ctx.model_name)
-        # MSWEA_API_KEY is a blanket override that bypasses provider-specific
-        # credential checks entirely.
-        if ctx.get_env("MSWEA_API_KEY"):
-            return
-        alternatives = auth_alternatives_for_model(ctx.model_name)
-        if not alternatives:
-            provider, _ = split_model_name(ctx.model_name)
-            raise ValueError(
-                f"{ctx.agent_name} backend {self.name!r}: unknown provider "
-                f"{provider!r}. Set MSWEA_API_KEY to override, or add the "
-                "provider to pier.agents.litellm."
-            )
-        require_env(
-            backend_label=f"{ctx.agent_name} backend {self.name!r}",
-            get_env=ctx.get_env,
-            any_of=alternatives,
-        )
-
-    def build_env(self, ctx: BackendContext) -> dict[str, str]:
-        # MSWEA_API_KEY wins if set; otherwise forward the provider's
-        # canonical env vars.
-        if mswea := ctx.get_env("MSWEA_API_KEY"):
-            return {"MSWEA_API_KEY": mswea}
-        if not ctx.model_name:
-            return {}
-        return passthrough_env_for_model(ctx.get_env, ctx.model_name)
-
-    def runtime_model_name(self, ctx: BackendContext) -> str | None:
-        # mini-swe-agent hands ``--model`` straight to LiteLLM, which expects
-        # the full ``provider/model`` form.
-        return ctx.runtime_model_name or ctx.model_name
-
-
-class MiniSweRespanBackend(MiniSweBackend):
-    """mini-swe-agent routed through Respan's OpenAI-compatible gateway."""
-
-    name = "respan"
-
-    _BASE_URL = "https://endpoint.respan.ai/api/"
-
-    def validate(self, ctx: BackendContext) -> None:
-        if not ctx.model_name:
-            raise ValueError(
-                f"Model name is required for {ctx.agent_name} backend {self.name!r}"
-            )
-        split_model_name(ctx.model_name)
-        require_env(
-            backend_label=f"{ctx.agent_name} backend {self.name!r}",
-            get_env=ctx.get_env,
-            any_of=(("RESPAN_API_KEY",),),
-        )
-
-    def build_env(self, ctx: BackendContext) -> dict[str, str]:
-        respan_key = ctx.get_env("RESPAN_API_KEY")
-        if not respan_key:
-            return {}
-        return {
-            "OPENAI_API_KEY": respan_key,
-            "RESPAN_API_KEY": respan_key,
-        }
-
-    def runtime_model_name(self, ctx: BackendContext) -> str | None:
-        # Respan routes on provider-prefixed model ids, so keep the model as-is.
-        return ctx.runtime_model_name or ctx.model_name
-
-    def config_flags(self, ctx: BackendContext) -> str:
-        return (
-            "-c model.model_kwargs.custom_llm_provider=openai "
-            f"-c model.model_kwargs.api_base={shlex.quote(self._BASE_URL)} "
-        )
-
-    def network_allowlist(self) -> NetworkAllowlist:
-        return NetworkAllowlist(domains=["endpoint.respan.ai"])
-
-
 class MiniSweAgent(BaseInstalledAgent):
     """
     The Mini SWE Agent uses the mini-swe-agent tool to solve tasks.
     """
 
     SUPPORTS_ATIF: bool = True
-    DEFAULT_BACKEND = "native"
-    BACKENDS = backend_registry(MiniSweNativeBackend(), MiniSweRespanBackend())
 
     CLI_FLAGS = [
         CliFlag(
@@ -452,13 +344,14 @@ class MiniSweAgent(BaseInstalledAgent):
     def __init__(
         self,
         reasoning_effort: str | None = None,
+        config_yaml: str | None = None,
         config_file: str | None = None,
         *args,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self._reasoning_effort = reasoning_effort
-        self._config_yaml: str | None = None
+        self._config_yaml = config_yaml
         if config_file:
             self._config_yaml = Path(config_file).read_text()
 
@@ -595,18 +488,40 @@ class MiniSweAgent(BaseInstalledAgent):
 
         escaped_instruction = shlex.quote(augmented_instruction)
 
-        backend = self.require_backend_spec()
-        assert isinstance(backend, MiniSweBackend)
-        ctx = self.backend_context(self._get_env)
-        runtime_model_name = backend.runtime_model_name(ctx)
-        if not runtime_model_name:
-            raise ValueError("Model name is required")
+        if not self.model_name or "/" not in self.model_name:
+            raise ValueError("Model name must be in the format provider/model_name")
 
-        process_env: dict[str, str] = {
-            "MSWEA_CONFIGURED": "true",  # Disable interactive setup
-            "MSWEA_COST_TRACKING": "ignore_errors",  # Ignore unknown model costs
-        }
-        process_env.update(backend.build_env(ctx))
+        env = self.build_process_env(
+            {
+                "MSWEA_CONFIGURED": "true",  # Disable interactive setup
+                "MSWEA_COST_TRACKING": "ignore_errors",  # Ignore unknown model costs
+            }
+        )
+
+        if self._get_env("MSWEA_API_KEY"):
+            env["MSWEA_API_KEY"] = self._get_env("MSWEA_API_KEY") or ""
+        else:
+            try:
+                api_key_vars = get_api_key_var_names_from_model_name(self.model_name)
+                for api_key_var in api_key_vars:
+                    if self._get_env(api_key_var):
+                        env[api_key_var] = self._get_env(api_key_var) or ""
+                    else:
+                        raise ValueError(
+                            f"Unset API variable for model {self.model_name}. "
+                            f"Please set {api_key_var} or MSWEA_API_KEY environment variable"
+                        )
+            except ValueError as e:
+                raise ValueError(
+                    f"Unable to determine API key for model {self.model_name}: {e}. "
+                    "Please set MSWEA_API_KEY environment variable as fallback"
+                )
+
+        # Pass through common API base configurations if present
+        if self._get_env("OPENAI_API_BASE"):
+            env["OPENAI_API_BASE"] = self._get_env("OPENAI_API_BASE") or ""
+        if self._get_env("OPENAI_BASE_URL"):
+            env["OPENAI_BASE_URL"] = self._get_env("OPENAI_BASE_URL") or ""
 
         cli_flags = self.build_cli_flags()
         extra_flags = (cli_flags + " ") if cli_flags else ""
@@ -622,23 +537,20 @@ class MiniSweAgent(BaseInstalledAgent):
                 f"{self._config_yaml}\n"
                 f"{heredoc_marker}\n"
             )
-            await self.exec_as_agent(
-                environment, command=write_config_cmd, env=process_env
-            )
+            await self.exec_as_agent(environment, command=write_config_cmd, env=env)
             config_flags = f"-c {config_path} "
 
         if self._reasoning_effort:
             config_flags += f"-c model.model_kwargs.extra_body.reasoning_effort={shlex.quote(self._reasoning_effort)} "
-        config_flags += backend.config_flags(ctx)
 
         await self.exec_as_agent(
             environment,
             command=(
                 '. "$HOME/.local/bin/env"; '
-                f"mini-swe-agent --yolo --model={runtime_model_name} --task={escaped_instruction} "
+                f"mini-swe-agent --yolo --model={self.model_name} --task={escaped_instruction} "
                 f"--output={self._mini_swe_agent_trajectory_path} {extra_flags}"
                 f"{config_flags}"
                 f"--exit-immediately 2>&1 </dev/null | tee /logs/agent/mini-swe-agent.txt"
             ),
-            env=process_env,
+            env=env,
         )
