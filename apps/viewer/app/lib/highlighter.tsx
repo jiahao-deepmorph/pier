@@ -7,6 +7,7 @@ import type { Root } from "hast";
 
 // Import only the languages we need
 import langBash from "shiki/langs/bash.mjs";
+import langConsole from "shiki/langs/console.mjs";
 import langJson from "shiki/langs/json.mjs";
 import langMarkdown from "shiki/langs/markdown.mjs";
 import langPython from "shiki/langs/python.mjs";
@@ -22,7 +23,7 @@ export const defaultThemes = {
 } as const;
 
 // Supported languages
-const langs = [langBash, langJson, langMarkdown, langPython, langToml];
+const langs = [langBash, langConsole, langJson, langMarkdown, langPython, langToml];
 
 // Language aliases
 const langAliases: Record<string, string> = {

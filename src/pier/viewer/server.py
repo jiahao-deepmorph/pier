@@ -75,6 +75,8 @@ class TaskGroupStats(TypedDict):
     output_tokens_count: int
     total_cost_usd: float
     cost_usd_count: int
+    total_peak_context_tokens: int
+    peak_context_tokens_count: int
 
 
 def _uncached_input(n_input: int | None, n_cache: int | None) -> int | None:
@@ -1062,6 +1064,8 @@ def _register_job_endpoints(app: FastAPI, jobs_dir: Path) -> None:
                     "output_tokens_count": 0,
                     "total_cost_usd": 0.0,
                     "cost_usd_count": 0,
+                    "total_peak_context_tokens": 0,
+                    "peak_context_tokens_count": 0,
                 }
 
             groups[key]["n_trials"] += 1
@@ -1103,6 +1107,15 @@ def _register_job_endpoints(app: FastAPI, jobs_dir: Path) -> None:
                 groups[key]["total_cost_usd"] += cost
                 groups[key]["cost_usd_count"] += 1
 
+            if (
+                result.agent_result is not None
+                and result.agent_result.peak_context_tokens is not None
+            ):
+                groups[key]["total_peak_context_tokens"] += (
+                    result.agent_result.peak_context_tokens
+                )
+                groups[key]["peak_context_tokens_count"] += 1
+
         # Convert to TaskSummary list
         summaries = []
         for (
@@ -1142,6 +1155,12 @@ def _register_job_endpoints(app: FastAPI, jobs_dir: Path) -> None:
                 if stats["cost_usd_count"] > 0
                 else None
             )
+            avg_peak_context_tokens = (
+                stats["total_peak_context_tokens"]
+                / stats["peak_context_tokens_count"]
+                if stats["peak_context_tokens_count"] > 0
+                else None
+            )
 
             summaries.append(
                 TaskSummary(
@@ -1160,6 +1179,7 @@ def _register_job_endpoints(app: FastAPI, jobs_dir: Path) -> None:
                     avg_cached_input_tokens=avg_cached_input_tokens,
                     avg_output_tokens=avg_output_tokens,
                     avg_cost_usd=avg_cost_usd,
+                    avg_peak_context_tokens=avg_peak_context_tokens,
                 )
             )
 
@@ -1404,6 +1424,12 @@ def _register_job_endpoints(app: FastAPI, jobs_dir: Path) -> None:
 
             n_input, n_cache, n_output, cost = result.compute_token_cost_totals()
 
+            peak_context_tokens = (
+                result.agent_result.peak_context_tokens
+                if result.agent_result is not None
+                else None
+            )
+
             all_summaries.append(
                 TrialSummary(
                     name=name,
@@ -1425,6 +1451,7 @@ def _register_job_endpoints(app: FastAPI, jobs_dir: Path) -> None:
                     cached_input_tokens=n_cache,
                     output_tokens=n_output,
                     cost_usd=cost,
+                    peak_context_tokens=peak_context_tokens,
                 )
             )
 

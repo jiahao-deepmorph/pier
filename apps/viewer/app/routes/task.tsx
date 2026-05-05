@@ -191,6 +191,21 @@ const columns: ColumnDef<TrialSummary>[] = [
       return <div className="text-right tabular-nums">{formatTokens(value)}</div>;
     },
   },
+  {
+    accessorKey: "peak_context_tokens",
+    header: ({ column }) => (
+      <div className="text-right">
+        <SortableHeader column={column}>Peak Context</SortableHeader>
+      </div>
+    ),
+    cell: ({ row }) => {
+      const value = row.original.peak_context_tokens;
+      if (value === null) {
+        return <div className="text-right text-muted-foreground">-</div>;
+      }
+      return <div className="text-right tabular-nums">{formatTokens(value)}</div>;
+    },
+  },
 ];
 
 function getPageUrl(searchParams: URLSearchParams, newPage: number): string {

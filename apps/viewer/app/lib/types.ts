@@ -73,6 +73,7 @@ export interface TaskSummary {
   avg_cached_input_tokens: number | null;
   avg_output_tokens: number | null;
   avg_cost_usd: number | null;
+  avg_peak_context_tokens: number | null;
 }
 
 export interface TrialSummary {
@@ -91,6 +92,7 @@ export interface TrialSummary {
   cached_input_tokens: number | null;
   output_tokens: number | null;
   cost_usd: number | null;
+  peak_context_tokens: number | null;
 }
 
 export interface TimingInfo {
@@ -169,9 +171,18 @@ export interface ToolCall {
   arguments: Record<string, unknown>;
 }
 
+export interface SubagentTrajectoryRef {
+  trajectory_id?: string | null;
+  session_id?: string | null;
+  trajectory_path?: string | null;
+  extra?: Record<string, unknown> | null;
+}
+
 export interface ObservationResult {
   source_call_id: string | null;
   content: ObservationContent;
+  subagent_trajectory_ref?: SubagentTrajectoryRef[] | null;
+  extra?: Record<string, unknown> | null;
 }
 
 export interface Observation {
@@ -191,11 +202,13 @@ export interface Step {
   timestamp: string | null;
   source: "system" | "user" | "agent";
   model_name: string | null;
+  reasoning_effort?: string | number | null;
   message: MessageContent;
   reasoning_content: string | null;
   tool_calls: ToolCall[] | null;
   observation: Observation | null;
   metrics: StepMetrics | null;
+  is_copied_context?: boolean | null;
   llm_call_count?: number | null;
   extra?: Record<string, unknown> | null;
 }
@@ -217,11 +230,15 @@ export interface FinalMetrics {
 
 export interface Trajectory {
   schema_version: string;
-  session_id: string;
+  session_id: string | null;
+  trajectory_id?: string | null;
   agent: TrajectoryAgent;
   steps: Step[];
   notes: string | null;
   final_metrics: FinalMetrics | null;
+  continued_trajectory_ref?: string | null;
+  subagent_trajectories?: Trajectory[] | null;
+  extra?: Record<string, unknown> | null;
 }
 
 export interface RewardCriterion {

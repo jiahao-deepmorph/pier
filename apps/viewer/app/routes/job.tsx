@@ -426,6 +426,21 @@ const columns: ColumnDef<TaskSummary>[] = [
       return <div className="text-right tabular-nums">{formatTokens(value)}</div>;
     },
   },
+  {
+    accessorKey: "avg_peak_context_tokens",
+    header: ({ column }) => (
+      <div className="text-right">
+        <SortableHeader column={column}>Peak Context</SortableHeader>
+      </div>
+    ),
+    cell: ({ row }) => {
+      const value = row.original.avg_peak_context_tokens;
+      if (value === null) {
+        return <div className="text-right text-muted-foreground">-</div>;
+      }
+      return <div className="text-right tabular-nums">{formatTokens(value)}</div>;
+    },
+  },
 ];
 
 const PAGE_SIZE = 100;
@@ -499,6 +514,7 @@ export default function Job() {
     { value: "avg_input_tokens", label: "Uncached Input Tokens" },
     { value: "avg_cached_input_tokens", label: "Cached Input Tokens" },
     { value: "avg_output_tokens", label: "Output Tokens" },
+    { value: "avg_peak_context_tokens", label: "Peak Context" },
   ], []);
 
   // Derive column visibility state from hidden columns

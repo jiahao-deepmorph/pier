@@ -72,12 +72,7 @@ import type {
   Step,
   TrialResult,
 } from "~/lib/types";
-import {
-  ContentRenderer,
-  ObservationContentRenderer,
-  getFirstLine,
-  getTextFromContent,
-} from "~/components/trajectory/content-renderer";
+import { TrajectoryViewer } from "~/components/trajectory-viewer";
 import { cn } from "~/lib/utils";
 import { Kbd } from "~/components/ui/kbd";
 import {
@@ -429,19 +424,6 @@ function DetailRow({
   );
 }
 
-function formatStepDuration(
-  prevTimestamp: string | null,
-  currentTimestamp: string | null
-): string | null {
-  if (!prevTimestamp || !currentTimestamp) return null;
-  const prev = new Date(prevTimestamp).getTime();
-  const current = new Date(currentTimestamp).getTime();
-  const durationMs = current - prev;
-  if (durationMs < 0) return null;
-
-  return formatMs(durationMs);
-}
-
 function formatMs(durationMs: number): string {
   const seconds = durationMs / 1000;
   if (seconds < 60) {
@@ -452,280 +434,7 @@ function formatMs(durationMs: number): string {
   return `${minutes}m ${remainingSeconds.toFixed(0)}s`;
 }
 
-function StepContent({
-  step,
-  jobName,
-  trialName,
-  selectedStep,
-}: {
-  step: Step;
-  jobName: string;
-  trialName: string;
-  selectedStep: string | null;
-}) {
-  const sourceColors: Record<string, string> = {
-    system: "text-gray-600 dark:text-gray-300",
-    user: "text-blue-600 dark:text-blue-300",
-    agent: "text-purple-600 dark:text-purple-300",
-  };
-
-  // Tool calls use the agent color since they come from the agent
-  const toolCallColor = sourceColors.agent;
-
-  return (
-    <div className="space-y-3">
-      {step.message && (
-        <ContentRenderer
-          content={step.message}
-          jobName={jobName}
-          trialName={trialName}
-          stepName={selectedStep}
-        />
-      )}
-
-      {step.reasoning_content && (
-        <div>
-          <h5 className="text-xs font-medium text-muted-foreground mb-1">
-            Reasoning
-          </h5>
-          <pre className="text-xs bg-muted p-2 overflow-x-auto whitespace-pre-wrap">
-            {step.reasoning_content}
-          </pre>
-        </div>
-      )}
-
-      {step.tool_calls && step.tool_calls.length > 0 && (
-        <div>
-          <h5 className="text-xs font-medium text-muted-foreground mb-1">
-            Tool Calls
-          </h5>
-          {step.tool_calls.map((tc) => (
-            <div key={tc.tool_call_id} className="mb-2">
-              <div className={`text-xs font-mono mb-1 ${toolCallColor}`}>
-                {tc.function_name}
-              </div>
-              <CodeBlock
-                code={JSON.stringify(tc.arguments, null, 2)}
-                lang="json"
-              />
-            </div>
-          ))}
-        </div>
-      )}
-
-      {step.observation && step.observation.results.length > 0 && (
-        <div>
-          <h5 className="text-xs font-medium text-muted-foreground mb-1">
-            Observations
-          </h5>
-          {step.observation.results.map((result, idx) => (
-            <div key={idx} className="mb-2">
-              <ObservationContentRenderer
-                content={result.content}
-                jobName={jobName}
-                trialName={trialName}
-                stepName={selectedStep}
-              />
-            </div>
-          ))}
-        </div>
-      )}
-
-      {step.metrics && (
-        <div className="text-xs text-muted-foreground">
-          Tokens: {(step.metrics.prompt_tokens ?? 0).toLocaleString()} prompt /{" "}
-          {(step.metrics.completion_tokens ?? 0).toLocaleString()} completion
-          {step.metrics.cost_usd && ` / $${step.metrics.cost_usd.toFixed(2)}`}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function StepTrigger({
-  step,
-  prevTimestamp,
-  startTimestamp,
-}: {
-  step: Step;
-  prevTimestamp: string | null;
-  startTimestamp: string | null;
-}) {
-  const sourceColors: Record<string, string> = {
-    system: "text-gray-600 dark:text-gray-300",
-    user: "text-blue-600 dark:text-blue-300",
-    agent: "text-purple-600 dark:text-purple-300",
-  };
-
-  // Duration is time elapsed since the previous step
-  const stepDuration = formatStepDuration(prevTimestamp, step.timestamp);
-  const sinceStart = formatStepDuration(startTimestamp, step.timestamp);
-
-  // Get first line of message for preview (handles both string and ContentPart[])
-  const firstLine = getFirstLine(step.message);
-
-  return (
-    <div className="flex-1 min-w-0 flex items-center gap-4 overflow-hidden">
-      <div className="flex-1 min-w-0 flex items-center gap-2 overflow-hidden">
-        <span className="text-xs text-muted-foreground shrink-0">#{step.step_id}</span>
-        <span className={`text-xs font-medium shrink-0 ${sourceColors[step.source]}`}>
-          {step.source}
-        </span>
-        {step.model_name && (
-          <span className="text-xs text-muted-foreground shrink-0">
-            {step.model_name}
-          </span>
-        )}
-        <span className="text-xs truncate min-w-0 transition-colors group-data-[state=open]:text-border">
-          {firstLine || (
-            <span className="text-muted-foreground italic">No message</span>
-          )}
-        </span>
-      </div>
-      {(sinceStart || stepDuration) && (
-        <div className="flex items-center gap-2 text-xs text-muted-foreground shrink-0">
-          {stepDuration && (
-            <span className="font-mono tabular-nums">
-              +{stepDuration}
-            </span>
-          )}
-          {sinceStart && (
-            <span className="font-mono tabular-nums">
-              {sinceStart}
-            </span>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-interface StepDurationInfo {
-  stepId: number;
-  durationMs: number;
-  elapsedMs: number;
-}
-
-function getOscillatingColor(index: number): string {
-  // Pattern: 1-2-3-4-3-2-1-2-3-4-3-2... (period of 6)
-  const colors = [
-    "var(--color-neutral-400)",
-    "var(--color-neutral-500)",
-    "var(--color-neutral-600)",
-    "var(--color-neutral-700)",
-  ];
-  const position = index % 6;
-  // 0->0, 1->1, 2->2, 3->3, 4->2, 5->1
-  const colorIndex = position <= 3 ? position : 6 - position;
-  return colors[colorIndex];
-}
-
-function StepDurationBar({
-  steps,
-  onStepClick,
-}: {
-  steps: Step[];
-  onStepClick: (index: number) => void;
-}) {
-  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
-  const [hoverPosition, setHoverPosition] = useState<number>(0);
-
-  if (steps.length === 0) return null;
-
-  const startTime = steps[0].timestamp
-    ? new Date(steps[0].timestamp).getTime()
-    : 0;
-
-  // Calculate durations: each step's duration is time since previous step
-  const stepDurations: StepDurationInfo[] = steps.map((step, idx) => {
-    const stepTime = step.timestamp ? new Date(step.timestamp).getTime() : 0;
-    const prevStep = idx > 0 ? steps[idx - 1] : null;
-    const prevTime = prevStep?.timestamp
-      ? new Date(prevStep.timestamp).getTime()
-      : stepTime; // First step has 0 duration
-
-    return {
-      stepId: step.step_id,
-      durationMs: Math.max(0, stepTime - prevTime),
-      elapsedMs: stepTime - startTime,
-    };
-  });
-
-  const totalMs = stepDurations.reduce((sum, s) => sum + s.durationMs, 0);
-
-  if (totalMs === 0) {
-    return (
-      <div className="mb-4">
-        <div className="h-6 bg-muted" />
-      </div>
-    );
-  }
-
-  // Calculate widths
-  const widths = stepDurations.map((s) => (s.durationMs / totalMs) * 100);
-
-  // Calculate cumulative widths for positioning tooltip
-  const cumulativeWidths: number[] = [];
-  let cumulative = 0;
-  for (const w of widths) {
-    cumulativeWidths.push(cumulative);
-    cumulative += w;
-  }
-
-  return (
-    <div className="mb-4">
-      <div className="relative">
-        {hoveredIndex !== null && (
-          <div
-            className="absolute bottom-full mb-2 z-10 -translate-x-1/2 pointer-events-none"
-            style={{ left: `${hoverPosition}%` }}
-          >
-            <div className="bg-popover border border-border rounded-md shadow-md px-3 py-2 whitespace-nowrap">
-              <div className="text-sm font-medium">
-                Step #{stepDurations[hoveredIndex].stepId}
-              </div>
-              <div className="text-sm text-muted-foreground">
-                Duration: {formatMs(stepDurations[hoveredIndex].durationMs)}
-              </div>
-              <div className="text-sm text-muted-foreground">
-                Started at: {formatMs(stepDurations[hoveredIndex].elapsedMs)}
-              </div>
-            </div>
-          </div>
-        )}
-        <div className="flex h-6 overflow-hidden">
-          {stepDurations.map((step, idx) => {
-            if (step.durationMs === 0) return null;
-            const widthPercent = widths[idx];
-            const isOtherHovered =
-              hoveredIndex !== null && hoveredIndex !== idx;
-            const centerPosition = cumulativeWidths[idx] + widthPercent / 2;
-
-            return (
-              <div
-                key={step.stepId}
-                className="transition-opacity duration-150 cursor-pointer"
-                style={{
-                  width: `${widthPercent}%`,
-                  backgroundColor: getOscillatingColor(idx),
-                  opacity: isOtherHovered ? 0.3 : 1,
-                }}
-                onMouseEnter={() => {
-                  setHoveredIndex(idx);
-                  setHoverPosition(centerPosition);
-                }}
-                onMouseLeave={() => setHoveredIndex(null)}
-                onClick={() => onStepClick(idx)}
-              />
-            );
-          })}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function TrajectoryViewer({
+function TrajectoryPanel({
   jobName,
   trialName,
   step: selectedStep,
@@ -739,15 +448,6 @@ function TrajectoryViewer({
     queryFn: () => fetchTrajectory(jobName, trialName, selectedStep),
   });
 
-  const [expandedSteps, setExpandedSteps] = useState<string[]>([]);
-  const stepRefs = useRef<(HTMLDivElement | null)[]>([]);
-
-  // Reset accordion expansion when switching steps so we don't leak open
-  // indices from one step's trajectory into another's.
-  useEffect(() => {
-    setExpandedSteps([]);
-  }, [selectedStep]);
-
   if (isLoading) {
     return (
       <Card>
@@ -755,7 +455,9 @@ function TrajectoryViewer({
           <CardTitle>Trajectory</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="text-sm text-muted-foreground"><LoadingDots /></div>
+          <div className="text-sm text-muted-foreground">
+            <LoadingDots />
+          </div>
         </CardContent>
       </Card>
     );
@@ -777,70 +479,31 @@ function TrajectoryViewer({
     );
   }
 
-  const handleStepClick = (index: number) => {
-    const stepKey = `step-${index}`;
-    setExpandedSteps((prev) =>
-      prev.includes(stepKey) ? prev : [...prev, stepKey]
-    );
-    stepRefs.current[index]?.scrollIntoView({
-      behavior: "smooth",
-      block: "start",
-    });
-  };
-
-  const agentStepCount = trajectory.steps.filter(
-    (trajectoryStep) => trajectoryStep.source === "agent"
-  ).length;
+  // "Trajectory · N agent steps / N records / $X total" header. We split
+  // out agent steps from total ATIF records because adapters (claude-code,
+  // codex) emit non-agent records too — system events, observations — and
+  // the agent-step count is what most people want when comparing runs.
+  // The viewer fetches inline images itself via pier's
+  // `/api/jobs/.../files/agent/<path>?step=<step>` endpoint, so we just
+  // hand it the trial coordinates as `imageContext`.
+  const recordCount = trajectory.steps.length;
+  const agentStepCount = trajectory.steps.filter((s) => s.source === "agent").length;
+  const totalCost = trajectory.final_metrics?.total_cost_usd ?? null;
 
   return (
     <Card>
       <CardHeader>
         <CardTitle>Trajectory</CardTitle>
         <div className="text-sm text-muted-foreground">
-          {agentStepCount} agent steps / {trajectory.steps.length} records
-          {trajectory.final_metrics?.total_cost_usd && (
-            <> / ${trajectory.final_metrics.total_cost_usd.toFixed(2)} total</>
-          )}
+          {agentStepCount} agent steps / {recordCount} records
+          {totalCost != null && <> / ${totalCost.toFixed(2)} total</>}
         </div>
       </CardHeader>
       <CardContent>
-        <StepDurationBar
-          steps={trajectory.steps}
-          onStepClick={handleStepClick}
+        <TrajectoryViewer
+          trajectory={trajectory}
+          imageContext={{ jobName, trialName, stepName: selectedStep }}
         />
-        <Accordion
-          type="multiple"
-          value={expandedSteps}
-          onValueChange={setExpandedSteps}
-        >
-          {trajectory.steps.map((trajectoryStep, idx) => (
-            <AccordionItem
-              key={trajectoryStep.step_id}
-              value={`step-${idx}`}
-              ref={(el: HTMLDivElement | null) => {
-                stepRefs.current[idx] = el;
-              }}
-            >
-              <AccordionTrigger>
-                <StepTrigger
-                  step={trajectoryStep}
-                  prevTimestamp={
-                    idx > 0 ? trajectory.steps[idx - 1]?.timestamp ?? null : null
-                  }
-                  startTimestamp={trajectory.steps[0]?.timestamp ?? null}
-                />
-              </AccordionTrigger>
-              <AccordionContent>
-                <StepContent
-                  step={trajectoryStep}
-                  jobName={jobName}
-                  trialName={trialName}
-                  selectedStep={selectedStep}
-                />
-              </AccordionContent>
-            </AccordionItem>
-          ))}
-        </Accordion>
       </CardContent>
     </Card>
   );
@@ -2021,7 +1684,7 @@ function TrialContent({
           <TabsTrigger value="exception">Exception</TabsTrigger>
         </TabsList>
         <TabsContent value="trajectory" forceMount className="data-[state=inactive]:hidden">
-          <TrajectoryViewer jobName={jobName} trialName={trialName} step={step} />
+          <TrajectoryPanel jobName={jobName} trialName={trialName} step={step} />
         </TabsContent>
         <TabsContent value="agent-logs" forceMount className="data-[state=inactive]:hidden">
           <AgentLogsViewer jobName={jobName} trialName={trialName} step={step} />

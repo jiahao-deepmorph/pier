@@ -66,6 +66,7 @@ class TaskSummary(BaseModel):
     avg_cached_input_tokens: float | None = None
     avg_output_tokens: float | None = None
     avg_cost_usd: float | None = None
+    avg_peak_context_tokens: float | None = None
 
 
 class TrialSummary(BaseModel):
@@ -86,6 +87,7 @@ class TrialSummary(BaseModel):
     cached_input_tokens: int | None = None
     output_tokens: int | None = None
     cost_usd: float | None = None
+    peak_context_tokens: int | None = None
 
 
 class ModelPricing(BaseModel):
