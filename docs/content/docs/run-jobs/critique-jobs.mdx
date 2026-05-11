@@ -47,11 +47,18 @@ pier critique run jobs/example --prompt ./prompt.md --failing
 
 # Run a small sample first
 pier critique run jobs/example --prompt ./prompt.md --limit 5
+
+# Run a deterministic random sample from selected source models
+pier critique run jobs/example --prompt ./prompt.md \
+  --source-model gpt-5.5 \
+  --source-model claude-opus-4-7 \
+  --sample-seed 13 \
+  --limit 10
 ```
 
-By default, critique jobs select source trials in the source job's planned order from `lock.json` (attempt, then task, then agent), so `--limit` follows the same prefix a regular job would launch. If no usable lock file exists, Pier falls back to stable trial-directory name order.
+By default, critique jobs select source trials in the source job's planned order from `lock.json` (attempt, then task, then agent), so `--limit` follows the same prefix a regular job would launch. Use `--sample-seed` to deterministically shuffle the selected source trials before `--limit`. If no usable lock file exists, Pier falls back to stable trial-directory name order.
 
-Most agent and environment flags mirror `pier run`, including `--agent`, `--model`, `--agent-kwarg`, `--agent-env`, `--env`, `--force-build`, `--delete`, resource overrides, timeout multipliers, `--n-concurrent`, `--env-file`, and `--yes`.
+Most agent and environment flags mirror `pier run`, including `--agent`, `--model`, `--agent-kwarg`, `--agent-env`, `--env`, `--force-build`, `--delete`, resource overrides, timeout multipliers, `--n-concurrent`, `--env-file`, and `--yes`. `--source-agent` and `--source-model` filter the completed trials being critiqued, not the judge agent used to run the critique.
 
 ## What Pier provides to the judge
 

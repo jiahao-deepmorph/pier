@@ -2,6 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { Search } from "lucide-react";
 
 import {
+  ChartToolbar,
+  ChartToolbarAction,
+  ChartToolbarSelect,
+} from "~/components/ui/chart-toolbar";
+import {
   Empty,
   EmptyDescription,
   EmptyHeader,
@@ -9,13 +14,6 @@ import {
   EmptyTitle,
 } from "~/components/ui/empty";
 import { IndeterminateBar } from "~/components/ui/indeterminate-bar";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "~/components/ui/select";
 import {
   bareModelName,
   FAMILY_CONFIG,
@@ -992,9 +990,6 @@ function ScatterControls({
   xColumnLabel?: string;
   yColumnLabel?: string;
 }) {
-  // Two-dataset case: no picker needed; the chart is fully determined.
-  const showPickers = columnOptions.length > 2;
-
   const swap = () => {
     const xv = xColumn;
     const yv = yColumn;
@@ -1002,83 +997,45 @@ function ScatterControls({
     setYColumn(xv);
   };
 
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-b text-xs text-muted-foreground">
-      <span className="max-w-3xl">
-        Avg reward per (agent + model) on{" "}
-        <span className="text-foreground">{xColumnLabel ?? "?"}</span> vs{" "}
-        <span className="text-foreground">{yColumnLabel ?? "?"}</span>. Points
-        above the y = x line do better on the y-axis dataset; below, better
-        on x. Hue = model family; shape = agent.
-      </span>
-      {showPickers && (
-        <div className="flex flex-wrap items-center gap-3">
-          <DatasetSelect
-            label="X"
-            value={xColumn}
-            onChange={setXColumn}
-            options={columnOptions}
-            disabledValue={yColumn}
-          />
-          <DatasetSelect
-            label="Y"
-            value={yColumn}
-            onChange={setYColumn}
-            options={columnOptions}
-            disabledValue={xColumn}
-          />
-          <button
-            type="button"
-            onClick={swap}
-            className="text-foreground underline-offset-2 hover:underline"
-          >
-            Swap
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
+  const xOptions = columnOptions.map((option) => ({
+    ...option,
+    disabled: option.value === yColumn,
+  }));
+  const yOptions = columnOptions.map((option) => ({
+    ...option,
+    disabled: option.value === xColumn,
+  }));
 
-function DatasetSelect({
-  label,
-  value,
-  onChange,
-  options,
-  disabledValue,
-}: {
-  label: string;
-  value: string | null;
-  onChange: (value: string | null) => void;
-  options: { value: string; label: string }[];
-  disabledValue: string | null;
-}) {
   return (
-    <div className="flex items-center gap-2">
-      <span>{label}</span>
-      <Select
-        value={value ?? undefined}
-        onValueChange={(v) => onChange(v)}
-      >
-        <SelectTrigger
-          size="sm"
-          className="h-7 border-0 bg-transparent px-2 text-xs text-foreground shadow-none hover:bg-accent focus-visible:ring-0 max-w-64"
-        >
-          <SelectValue placeholder="Select dataset" />
-        </SelectTrigger>
-        <SelectContent>
-          {options.map((option) => (
-            <SelectItem
-              key={option.value}
-              value={option.value}
-              disabled={option.value === disabledValue}
-            >
-              {option.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </div>
+    <ChartToolbar
+      description={
+        <>
+          Avg reward per (agent + model) on{" "}
+          <span className="text-foreground">{xColumnLabel ?? "?"}</span> vs{" "}
+          <span className="text-foreground">{yColumnLabel ?? "?"}</span>.
+          Points above the y = x line do better on the y-axis dataset; below,
+          better on x. Hue = model family; shape = agent.
+        </>
+      }
+    >
+      <ChartToolbarSelect
+        label="X"
+        value={xColumn ?? undefined}
+        onValueChange={(v) => setXColumn(v)}
+        options={xOptions}
+        placeholder="Select dataset"
+        className="max-w-64"
+      />
+      <ChartToolbarSelect
+        label="Y"
+        value={yColumn ?? undefined}
+        onValueChange={(v) => setYColumn(v)}
+        options={yOptions}
+        placeholder="Select dataset"
+        className="max-w-64"
+      />
+      <ChartToolbarAction onClick={swap}>Swap</ChartToolbarAction>
+    </ChartToolbar>
   );
 }
 

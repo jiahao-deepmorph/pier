@@ -1,7 +1,8 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 import { FileText, Search, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef } from "react";
+import { parseAsArrayOf, parseAsInteger, parseAsString, useQueryState } from "nuqs";
 import { Link, useNavigate, useParams } from "react-router";
 
 import {
@@ -26,11 +27,29 @@ import {
 } from "~/components/ui/empty";
 import { Input } from "~/components/ui/input";
 import { Kbd } from "~/components/ui/kbd";
+import { Combobox, type ComboboxOption } from "~/components/ui/combobox";
+import {
+  Pagination,
+  PaginationContent,
+  PaginationEllipsis,
+  PaginationItem,
+  PaginationLink,
+  PaginationNext,
+  PaginationPrevious,
+} from "~/components/ui/pagination";
 import { fetchCritiqueRuns } from "~/lib/api";
 import { useDebouncedValue, useKeyboardTableNavigation } from "~/lib/hooks";
 import type { CritiqueRunSummary } from "~/lib/types";
 
 const PAGE_SIZE = 100;
+const STATUS_OPTIONS: ComboboxOption[] = [
+  { value: "pending", label: "Pending" },
+  { value: "running", label: "Running" },
+  { value: "completed", label: "Completed" },
+];
+const FAILURE_OPTIONS: ComboboxOption[] = [
+  { value: "failed", label: "With failures" },
+];
 
 function formatDateTime(date: string | null): string {
   if (!date) return "-";
@@ -48,7 +67,7 @@ function CritiqueStatusBadge({ status }: { status: string }) {
   const variant =
     status === "failed"
       ? "destructive"
-      : status === "completed" || status === "completed_with_failures"
+      : status === "completed"
         ? "secondary"
         : "outline";
 
@@ -63,10 +82,102 @@ function agentModel(run: CritiqueRunSummary): string {
   return run.agent_name ?? model ?? "-";
 }
 
+function PaginationFooter({
+  page,
+  setPage,
+  total,
+  totalPages,
+}: {
+  page: number;
+  setPage: (updater: number | ((page: number) => number)) => void;
+  total: number;
+  totalPages: number;
+}) {
+  if (totalPages <= 1) return null;
+
+  return (
+    <div className="grid grid-cols-3 items-center mt-4">
+      <div className="text-sm text-muted-foreground">
+        Showing {(page - 1) * PAGE_SIZE + 1}-{Math.min(page * PAGE_SIZE, total)} of{" "}
+        {total} critique jobs
+      </div>
+      <Pagination>
+        <PaginationContent>
+          <PaginationItem>
+            <PaginationPrevious
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              className={page === 1 ? "pointer-events-none opacity-50" : "cursor-pointer"}
+            />
+          </PaginationItem>
+          {page > 2 && (
+            <PaginationItem>
+              <PaginationLink onClick={() => setPage(1)} className="cursor-pointer">
+                1
+              </PaginationLink>
+            </PaginationItem>
+          )}
+          {page > 3 && (
+            <PaginationItem>
+              <PaginationEllipsis />
+            </PaginationItem>
+          )}
+          {page > 1 && (
+            <PaginationItem>
+              <PaginationLink
+                onClick={() => setPage(page - 1)}
+                className="cursor-pointer"
+              >
+                {page - 1}
+              </PaginationLink>
+            </PaginationItem>
+          )}
+          <PaginationItem>
+            <PaginationLink isActive>{page}</PaginationLink>
+          </PaginationItem>
+          {page < totalPages && (
+            <PaginationItem>
+              <PaginationLink
+                onClick={() => setPage(page + 1)}
+                className="cursor-pointer"
+              >
+                {page + 1}
+              </PaginationLink>
+            </PaginationItem>
+          )}
+          {page < totalPages - 2 && (
+            <PaginationItem>
+              <PaginationEllipsis />
+            </PaginationItem>
+          )}
+          {page < totalPages - 1 && (
+            <PaginationItem>
+              <PaginationLink
+                onClick={() => setPage(totalPages)}
+                className="cursor-pointer"
+              >
+                {totalPages}
+              </PaginationLink>
+            </PaginationItem>
+          )}
+          <PaginationItem>
+            <PaginationNext
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              className={
+                page === totalPages ? "pointer-events-none opacity-50" : "cursor-pointer"
+              }
+            />
+          </PaginationItem>
+        </PaginationContent>
+      </Pagination>
+      <div />
+    </div>
+  );
+}
+
 const columns: ColumnDef<CritiqueRunSummary>[] = [
   {
     accessorKey: "status",
-    header: ({ column }) => <SortableHeader column={column}>Status</SortableHeader>,
+    header: ({ column }) => <SortableHeader column={column}>State</SortableHeader>,
     cell: ({ row }) => <CritiqueStatusBadge status={row.original.status} />,
   },
   {
@@ -129,17 +240,56 @@ const columns: ColumnDef<CritiqueRunSummary>[] = [
 export default function Critiques() {
   const { jobName } = useParams();
   const navigate = useNavigate();
-  const [searchQuery, setSearchQuery] = useState("");
-  const debouncedSearch = useDebouncedValue(searchQuery, 300);
+  const [searchQuery, setSearchQuery] = useQueryState("q", parseAsString);
+  const [statusFilter, setStatusFilter] = useQueryState(
+    "status",
+    parseAsArrayOf(parseAsString).withDefault([])
+  );
+  const [failureFilter, setFailureFilter] = useQueryState(
+    "failures",
+    parseAsArrayOf(parseAsString).withDefault([])
+  );
+  const [page, setPage] = useQueryState(
+    "page",
+    parseAsInteger.withDefault(1)
+  );
+  const hasMountedRef = useRef(false);
+  const debouncedSearch = useDebouncedValue(searchQuery ?? "", 300);
+  const hasFailures = failureFilter.includes("failed");
+
+  useEffect(() => {
+    if (!hasMountedRef.current) {
+      hasMountedRef.current = true;
+      return;
+    }
+    setPage(1);
+  }, [debouncedSearch, hasFailures, setPage, statusFilter]);
 
   const { data, isLoading } = useQuery({
-    queryKey: ["critique-runs", jobName, debouncedSearch],
-    queryFn: () => fetchCritiqueRuns(jobName!, 1, PAGE_SIZE, debouncedSearch),
+    queryKey: [
+      "critique-runs",
+      jobName,
+      page,
+      debouncedSearch,
+      statusFilter,
+      hasFailures,
+    ],
+    queryFn: () =>
+      fetchCritiqueRuns(jobName!, page, PAGE_SIZE, {
+        search: debouncedSearch || undefined,
+        statuses: statusFilter.length > 0 ? statusFilter : undefined,
+        hasFailures,
+      }),
     enabled: !!jobName,
     placeholderData: keepPreviousData,
   });
 
   const runs = data?.items ?? [];
+  const totalPages = data?.total_pages ?? 0;
+  const total = data?.total ?? 0;
+  const safePage = Math.min(Math.max(page, 1), Math.max(totalPages, 1));
+  const runningRuns = runs.filter((run) => run.status === "running").length;
+  const failedRuns = runs.filter((run) => run.n_failed_items > 0).length;
   const { highlightedIndex } = useKeyboardTableNavigation({
     rows: runs,
     onNavigate: (run) =>
@@ -178,6 +328,8 @@ export default function Critiques() {
             </h1>
             <div className="text-sm text-muted-foreground">
               {data?.total ?? 0} critique jobs
+              {runningRuns > 0 && <> | {runningRuns} running</>}
+              {failedRuns > 0 && <> | {failedRuns} with failures</>}
             </div>
           </div>
           <div className="flex items-center gap-3 text-xs text-muted-foreground whitespace-nowrap mt-auto">
@@ -198,25 +350,52 @@ export default function Critiques() {
         </div>
       </div>
 
-      <div className="relative -mb-px max-w-xl">
-        <Input
-          placeholder="Search critiques..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          size="lg"
+      <div className="grid grid-cols-4 -mb-px">
+        <div className="col-span-2 relative">
+          <Input
+            placeholder="Search critiques..."
+            value={searchQuery ?? ""}
+            onChange={(e) => setSearchQuery(e.target.value || null)}
+            size="lg"
+            variant="card"
+            className="peer pl-9 pr-16 shadow-none"
+          />
+          <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-border transition-colors peer-focus-visible:text-ring" />
+          {searchQuery ? (
+            <button
+              type="button"
+              onClick={() => setSearchQuery(null)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          ) : (
+            <div className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
+              <Kbd>⌘</Kbd>
+              <Kbd>K</Kbd>
+            </div>
+          )}
+        </div>
+        <Combobox
+          options={STATUS_OPTIONS}
+          value={statusFilter}
+          onValueChange={setStatusFilter}
+          placeholder="All states"
+          searchPlaceholder="Search states..."
+          emptyText="No states found."
           variant="card"
-          className="peer pl-9 pr-10 shadow-none"
+          className="w-full border-l-0 shadow-none"
         />
-        <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-border transition-colors peer-focus-visible:text-ring" />
-        {searchQuery && (
-          <button
-            type="button"
-            onClick={() => setSearchQuery("")}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        )}
+        <Combobox
+          options={FAILURE_OPTIONS}
+          value={failureFilter}
+          onValueChange={setFailureFilter}
+          placeholder="All outcomes"
+          searchPlaceholder="Search outcomes..."
+          emptyText="No outcomes found."
+          variant="card"
+          className="w-full border-l-0 shadow-none"
+        />
       </div>
 
       <DataTable
@@ -242,6 +421,12 @@ export default function Critiques() {
             </EmptyHeader>
           </Empty>
         }
+      />
+      <PaginationFooter
+        page={safePage}
+        setPage={setPage}
+        total={total}
+        totalPages={totalPages}
       />
     </div>
   );

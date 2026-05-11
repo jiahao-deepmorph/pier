@@ -105,6 +105,9 @@ class CritiqueRunSummary(BaseModel):
     finished_at: datetime | None = None
     n_items: int = 0
     n_completed_items: int = 0
+    n_running_items: int = 0
+    n_pending_items: int = 0
+    n_missing_items: int = 0
     n_failed_items: int = 0
     agent_name: str | None = None
     model_provider: str | None = None
@@ -148,6 +151,47 @@ class CritiqueRunDetail(BaseModel):
     config: dict[str, Any] | None = None
     result: dict[str, Any] | None = None
     items: list[CritiqueItemSummary] = []
+
+
+class CritiqueHeatmapRow(BaseModel):
+    """A grouped row in the critique heatmap."""
+
+    key: str
+    label: str
+    kind: str
+    value: str | None = None
+
+
+class CritiqueHeatmapColumn(BaseModel):
+    """A grouped column in the critique heatmap."""
+
+    key: str
+    label: str
+    source: str | None = None
+    task_name: str | None = None
+
+
+class CritiqueHeatmapCell(BaseModel):
+    """Aggregated critique stats for one heatmap crossing."""
+
+    row_key: str
+    column_key: str
+    n_items: int = 0
+    n_good: int = 0
+    n_bad: int = 0
+    n_errors: int = 0
+    good_rate: float | None = None
+    bad_rate: float | None = None
+    rating_counts: dict[str, int] = {}
+    tag_counts: dict[str, int] = {}
+
+
+class CritiqueHeatmapData(BaseModel):
+    """Data for a critique run heatmap."""
+
+    rows: list[CritiqueHeatmapRow]
+    columns: list[CritiqueHeatmapColumn]
+    cells: dict[str, dict[str, CritiqueHeatmapCell]]
 
 
 class TrialCritiqueDetail(BaseModel):
@@ -211,6 +255,19 @@ class TaskFilters(BaseModel):
     models: list[FilterOption]
     sources: list[FilterOption]
     tasks: list[FilterOption]
+
+
+class CritiqueItemFilters(BaseModel):
+    """Available filter options for critique items within a critique run."""
+
+    agents: list[FilterOption]
+    providers: list[FilterOption]
+    models: list[FilterOption]
+    sources: list[FilterOption]
+    tasks: list[FilterOption]
+    ratings: list[FilterOption]
+    tags: list[FilterOption]
+    statuses: list[FilterOption]
 
 
 class TaskDefinitionSummary(BaseModel):

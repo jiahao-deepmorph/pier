@@ -1,6 +1,13 @@
 import type {
   AgentLogs,
   ArtifactsData,
+  CritiqueHeatmapColumnBy,
+  CritiqueHeatmapData,
+  CritiqueHeatmapRatingFilter,
+  CritiqueHeatmapRowBy,
+  CritiqueHeatmapSourceTrialsFilter,
+  CritiqueItemFilters,
+  CritiqueItemSummary,
   CritiqueRunDetail,
   CritiqueRunSummary,
   FileInfo,
@@ -122,18 +129,32 @@ export async function fetchJob(jobName: string): Promise<JobResult> {
   return response.json();
 }
 
+export interface CritiqueRunListFilters {
+  search?: string;
+  statuses?: string[];
+  hasFailures?: boolean;
+}
+
 export async function fetchCritiqueRuns(
   jobName: string,
   page: number = 1,
   pageSize: number = 100,
-  search?: string
+  filters?: CritiqueRunListFilters
 ): Promise<PaginatedResponse<CritiqueRunSummary>> {
   const params = new URLSearchParams({
     page: page.toString(),
     page_size: pageSize.toString(),
   });
-  if (search) {
-    params.set("q", search);
+  if (filters?.search) {
+    params.set("q", filters.search);
+  }
+  if (filters?.statuses) {
+    for (const status of filters.statuses) {
+      params.append("status", status);
+    }
+  }
+  if (filters?.hasFailures) {
+    params.set("has_failures", "true");
   }
   const response = await fetch(
     `${API_BASE}/api/jobs/${encodeURIComponent(jobName)}/critiques?${params}`
@@ -146,13 +167,194 @@ export async function fetchCritiqueRuns(
 
 export async function fetchCritiqueRun(
   jobName: string,
-  critiqueRunName: string
+  critiqueRunName: string,
+  includeItems: boolean = true
 ): Promise<CritiqueRunDetail> {
+  const params = new URLSearchParams();
+  if (!includeItems) {
+    params.set("include_items", "false");
+  }
   const response = await fetch(
-    `${API_BASE}/api/jobs/${encodeURIComponent(jobName)}/critiques/${encodeURIComponent(critiqueRunName)}`
+    `${API_BASE}/api/jobs/${encodeURIComponent(jobName)}/critiques/${encodeURIComponent(critiqueRunName)}?${params}`
   );
   if (!response.ok) {
     throw new Error(`Failed to fetch critique run: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+export interface CritiqueItemListFilters {
+  search?: string;
+  agents?: string[];
+  providers?: string[];
+  models?: string[];
+  sources?: string[];
+  tasks?: string[];
+  ratings?: string[];
+  tags?: string[];
+  sourceTrials?: CritiqueHeatmapSourceTrialsFilter;
+  statuses?: string[];
+  sortBy?: string;
+  sortOrder?: "asc" | "desc";
+}
+
+export async function fetchCritiqueItems(
+  jobName: string,
+  critiqueRunName: string,
+  page: number = 1,
+  pageSize: number = 100,
+  filters?: CritiqueItemListFilters
+): Promise<PaginatedResponse<CritiqueItemSummary>> {
+  const params = new URLSearchParams({
+    page: page.toString(),
+    page_size: pageSize.toString(),
+  });
+  if (filters?.search) {
+    params.set("q", filters.search);
+  }
+  if (filters?.agents) {
+    for (const agent of filters.agents) {
+      params.append("agent", agent);
+    }
+  }
+  if (filters?.providers) {
+    for (const provider of filters.providers) {
+      params.append("provider", provider);
+    }
+  }
+  if (filters?.models) {
+    for (const model of filters.models) {
+      params.append("model", model);
+    }
+  }
+  if (filters?.sources) {
+    for (const source of filters.sources) {
+      params.append("source", source);
+    }
+  }
+  if (filters?.tasks) {
+    for (const task of filters.tasks) {
+      params.append("task", task);
+    }
+  }
+  if (filters?.ratings) {
+    for (const rating of filters.ratings) {
+      params.append("rating", rating);
+    }
+  }
+  if (filters?.tags) {
+    for (const tag of filters.tags) {
+      params.append("tag", tag);
+    }
+  }
+  if (filters?.sourceTrials) {
+    params.set("source_trials", filters.sourceTrials);
+  }
+  if (filters?.statuses) {
+    for (const status of filters.statuses) {
+      params.append("status", status);
+    }
+  }
+  if (filters?.sortBy) {
+    params.set("sort_by", filters.sortBy);
+  }
+  if (filters?.sortOrder) {
+    params.set("sort_order", filters.sortOrder);
+  }
+  const response = await fetch(
+    `${API_BASE}/api/jobs/${encodeURIComponent(jobName)}/critiques/${encodeURIComponent(critiqueRunName)}/items?${params}`
+  );
+  if (!response.ok) {
+    throw new Error(`Failed to fetch critique items: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+export async function fetchCritiqueItemFilters(
+  jobName: string,
+  critiqueRunName: string
+): Promise<CritiqueItemFilters> {
+  const response = await fetch(
+    `${API_BASE}/api/jobs/${encodeURIComponent(jobName)}/critiques/${encodeURIComponent(critiqueRunName)}/items/filters`
+  );
+  if (!response.ok) {
+    throw new Error(`Failed to fetch critique item filters: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+export interface CritiqueHeatmapFilters {
+  rowBy?: CritiqueHeatmapRowBy;
+  columnBy?: CritiqueHeatmapColumnBy;
+  sourceTrials?: CritiqueHeatmapSourceTrialsFilter;
+  rating?: CritiqueHeatmapRatingFilter;
+  agents?: string[];
+  providers?: string[];
+  models?: string[];
+  sources?: string[];
+  tasks?: string[];
+  ratings?: string[];
+  tags?: string[];
+  statuses?: string[];
+  search?: string;
+}
+
+export async function fetchCritiqueHeatmap(
+  jobName: string,
+  critiqueRunName: string,
+  filters?: CritiqueHeatmapFilters
+): Promise<CritiqueHeatmapData> {
+  const params = new URLSearchParams();
+  if (filters?.rowBy) params.set("row_by", filters.rowBy);
+  if (filters?.columnBy) params.set("column_by", filters.columnBy);
+  if (filters?.sourceTrials) params.set("source_trials", filters.sourceTrials);
+  if (filters?.rating) params.set("rating", filters.rating);
+  if (filters?.agents) {
+    for (const agent of filters.agents) {
+      params.append("agent", agent);
+    }
+  }
+  if (filters?.providers) {
+    for (const provider of filters.providers) {
+      params.append("provider", provider);
+    }
+  }
+  if (filters?.models) {
+    for (const model of filters.models) {
+      params.append("model", model);
+    }
+  }
+  if (filters?.sources) {
+    for (const source of filters.sources) {
+      params.append("source", source);
+    }
+  }
+  if (filters?.tasks) {
+    for (const task of filters.tasks) {
+      params.append("task", task);
+    }
+  }
+  if (filters?.ratings) {
+    for (const rating of filters.ratings) {
+      params.append("rating_value", rating);
+    }
+  }
+  if (filters?.tags) {
+    for (const tag of filters.tags) {
+      params.append("tag", tag);
+    }
+  }
+  if (filters?.statuses) {
+    for (const status of filters.statuses) {
+      params.append("status", status);
+    }
+  }
+  if (filters?.search) params.set("q", filters.search);
+  const response = await fetch(
+    `${API_BASE}/api/jobs/${encodeURIComponent(jobName)}/critiques/${encodeURIComponent(critiqueRunName)}/heatmap?${params}`
+  );
+  if (!response.ok) {
+    throw new Error(`Failed to fetch critique heatmap: ${response.statusText}`);
   }
   return response.json();
 }

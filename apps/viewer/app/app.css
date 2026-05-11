@@ -153,6 +153,12 @@ html.dark {
   }
 }
 
+@layer components {
+  :where(.relative:has(> [data-slot="input"]:focus-visible)) {
+    z-index: 30;
+  }
+}
+
 /* Prose headings */
 .prose
   :where(h1, h2, h3, h4, h5, h6):not(

@@ -24,6 +24,11 @@ from pier.models.job.config import (
 from pier.models.job.result import JobStats
 from pier.models.trial.result import TrialResult
 from pier.viewer.models import (
+    CritiqueHeatmapCell,
+    CritiqueHeatmapColumn,
+    CritiqueHeatmapData,
+    CritiqueHeatmapRow,
+    CritiqueItemFilters,
     CritiqueItemSummary,
     CritiqueRunDetail,
     CritiqueRunSummary,
@@ -872,6 +877,130 @@ def _register_job_endpoints(app: FastAPI, jobs_dir: Path) -> None:
             has_result_md=result_md.exists(),
         )
 
+    def _critique_item_summaries(
+        run_dir: Path, *, job_name: str, run_finished: bool
+    ) -> list[CritiqueItemSummary]:
+        return [
+            _critique_item_summary(
+                item_dir, job_name=job_name, run_finished=run_finished
+            )
+            for item_dir in _critique_item_dirs(run_dir)
+        ]
+
+    def _filter_critique_items(
+        items: list[CritiqueItemSummary],
+        *,
+        q: str | None = None,
+        agent: list[str] | None = None,
+        provider: list[str] | None = None,
+        model: list[str] | None = None,
+        source: list[str] | None = None,
+        task: list[str] | None = None,
+        rating: list[str] | None = None,
+        tag: list[str] | None = None,
+        source_trials: str = "all",
+        status: list[str] | None = None,
+    ) -> list[CritiqueItemSummary]:
+        filtered = items
+        if q:
+            query = q.lower()
+            filtered = [
+                item
+                for item in filtered
+                if query in item.source_trial_name.lower()
+                or (
+                    item.critique_trial_name
+                    and query in item.critique_trial_name.lower()
+                )
+                or (item.task_name and query in item.task_name.lower())
+                or (item.source and query in item.source.lower())
+                or (item.rating and query in item.rating.lower())
+                or query in item.status.lower()
+                or (item.error_type and query in item.error_type.lower())
+                or (
+                    item.source_error_type
+                    and query in item.source_error_type.lower()
+                )
+                or (item.feedback and query in item.feedback.lower())
+                or any(query in item_tag.lower() for item_tag in item.tags)
+            ]
+        if agent:
+            agents = set(agent)
+            filtered = [item for item in filtered if item.agent_name in agents]
+        if provider:
+            providers = set(provider)
+            filtered = [
+                item for item in filtered if item.model_provider in providers
+            ]
+        if model:
+            models = set(model)
+            filtered = [item for item in filtered if item.model_name in models]
+        if source:
+            sources = set(source)
+            filtered = [item for item in filtered if item.source in sources]
+        if task:
+            tasks = set(task)
+            filtered = [item for item in filtered if item.task_name in tasks]
+        if rating:
+            ratings = set(rating)
+            filtered = [
+                item for item in filtered if (item.rating or "none") in ratings
+            ]
+        if tag:
+            tags = set(tag)
+            filtered = [
+                item for item in filtered if any(item_tag in tags for item_tag in item.tags)
+            ]
+        if source_trials != "all":
+            filtered = [
+                item
+                for item in filtered
+                if (
+                    (source_trials == "errored" and item.source_error_type)
+                    or (
+                        source_trials == "non_errored"
+                        and not item.source_error_type
+                    )
+                    or (
+                        source_trials == "successful"
+                        and not item.source_error_type
+                        and item.source_reward is not None
+                        and item.source_reward >= 1
+                    )
+                )
+            ]
+        if status:
+            statuses = set(status)
+            filtered = [item for item in filtered if item.status in statuses]
+        return filtered
+
+    def _sort_critique_items(
+        items: list[CritiqueItemSummary],
+        *,
+        sort_by: str | None,
+        sort_order: str,
+    ) -> None:
+        if not sort_by:
+            return
+        reverse = sort_order == "desc"
+
+        def value(item: CritiqueItemSummary) -> Any:
+            if sort_by == "source_outcome":
+                return item.source_error_type or item.source_reward
+            if sort_by == "tags":
+                return ", ".join(item.tags)
+            return getattr(item, sort_by, None)
+
+        def sort_key(item: CritiqueItemSummary) -> tuple[bool, int, float | str]:
+            raw_value = value(item)
+            if raw_value is None:
+                return (True, 0, "")
+            if isinstance(raw_value, int | float) and not isinstance(raw_value, bool):
+                return (False, 0, float(raw_value))
+            return (False, 1, str(raw_value))
+
+        items.sort(key=sort_key, reverse=reverse)
+
     def _critique_run_summary(run_dir: Path) -> CritiqueRunSummary:
         config = _read_json_file(run_dir / "config.json")
         result = _read_json_file(run_dir / "result.json")
@@ -913,6 +1042,7 @@ def _register_job_endpoints(app: FastAPI, jobs_dir: Path) -> None:
         ]
 
         n_completed = sum(1 for item in item_summaries if item.finished_at is not None)
+        n_running = sum(1 for item in item_summaries if item.status == "running")
 
         filesystem_failures = sum(
             1 for item in item_summaries if item.status == "failed"
@@ -928,13 +1058,24 @@ def _register_job_endpoints(app: FastAPI, jobs_dir: Path) -> None:
                 len(failed_items),
                 filesystem_failures,
             )
-            status = "completed_with_failures" if n_failed else "completed"
+            status = "completed"
             if not run_finished:
                 status = "running"
         else:
             n_items = len(item_dirs)
             n_failed = filesystem_failures
             status = "running" if item_dirs else "pending"
+        terminal_item_dirs = sum(
+            1
+            for item in item_summaries
+            if item.status in {"completed", "failed", "missing"}
+        )
+        failed_items_without_dirs = max(n_failed - filesystem_failures, 0)
+        n_unaccounted = max(
+            n_items - terminal_item_dirs - failed_items_without_dirs - n_running, 0
+        )
+        n_missing = n_unaccounted if run_finished else 0
+        n_pending = 0 if run_finished else n_unaccounted
 
         return CritiqueRunSummary(
             name=run_dir.name,
@@ -944,6 +1085,9 @@ def _register_job_endpoints(app: FastAPI, jobs_dir: Path) -> None:
             finished_at=source.get("finished_at") if result else None,
             n_items=n_items,
             n_completed_items=n_completed,
+            n_running_items=n_running,
+            n_pending_items=n_pending,
+            n_missing_items=n_missing,
             n_failed_items=n_failed,
             agent_name=agent.get("name"),
             model_provider=model_provider,
@@ -1322,6 +1466,12 @@ def _register_job_endpoints(app: FastAPI, jobs_dir: Path) -> None:
             default=100, ge=1, le=100, description="Number of items per page"
         ),
         q: str | None = Query(default=None, description="Search query"),
+        status: list[str] | None = Query(
+            default=None, description="Filter by lifecycle status"
+        ),
+        has_failures: bool = Query(
+            default=False, description="Only include runs with failed critique items"
+        ),
     ) -> PaginatedResponse[CritiqueRunSummary]:
         """List critique runs stored under a source job."""
         job_dir = _validate_job_path(job_name)
@@ -1340,6 +1490,11 @@ def _register_job_endpoints(app: FastAPI, jobs_dir: Path) -> None:
                 or (s.model_name and query in s.model_name.lower())
                 or (s.environment_type and query in s.environment_type.lower())
             ]
+        if status:
+            statuses = set(status)
+            summaries = [s for s in summaries if s.status in statuses]
+        if has_failures:
+            summaries = [s for s in summaries if s.n_failed_items > 0]
 
         total = len(summaries)
         total_pages = math.ceil(total / page_size) if total > 0 else 0
@@ -1360,7 +1515,12 @@ def _register_job_endpoints(app: FastAPI, jobs_dir: Path) -> None:
         response_model=CritiqueRunDetail,
     )
     def get_critique_run(
-        job_name: str, critique_run_name: str
+        job_name: str,
+        critique_run_name: str,
+        include_items: bool = Query(
+            default=True,
+            description="Include per-source-trial item summaries in the response",
+        ),
     ) -> CritiqueRunDetail:
         """Get a critique run and its per-source-trial items."""
         job_dir = _validate_job_path(job_name)
@@ -1381,7 +1541,336 @@ def _register_job_endpoints(app: FastAPI, jobs_dir: Path) -> None:
                     item_dir, job_name=job_name, run_finished=run_finished
                 )
                 for item_dir in _critique_item_dirs(run_dir)
+            ]
+            if include_items
+            else [],
+        )
+
+    @app.get(
+        "/api/jobs/{job_name}/critiques/{critique_run_name}/items/filters",
+        response_model=CritiqueItemFilters,
+    )
+    def get_critique_item_filters(
+        job_name: str, critique_run_name: str
+    ) -> CritiqueItemFilters:
+        """Get available filter options for critique items within a critique run."""
+        from collections import Counter
+
+        job_dir = _validate_job_path(job_name)
+        if not job_dir.exists():
+            raise HTTPException(status_code=404, detail=f"Job '{job_name}' not found")
+
+        run_dir = _validate_critique_run_path(job_name, critique_run_name)
+        run_summary = _critique_run_summary(run_dir)
+        items = _critique_item_summaries(
+            run_dir, job_name=job_name, run_finished=run_summary.finished_at is not None
+        )
+
+        agent_counts: Counter[str] = Counter()
+        provider_counts: Counter[str] = Counter()
+        model_counts: Counter[str] = Counter()
+        source_counts: Counter[str] = Counter()
+        task_counts: Counter[str] = Counter()
+        rating_counts: Counter[str] = Counter()
+        tag_counts: Counter[str] = Counter()
+        status_counts: Counter[str] = Counter()
+        for item in items:
+            if item.agent_name:
+                agent_counts[item.agent_name] += 1
+            if item.model_provider:
+                provider_counts[item.model_provider] += 1
+            if item.model_name:
+                model_counts[item.model_name] += 1
+            if item.source:
+                source_counts[item.source] += 1
+            if item.task_name:
+                task_counts[item.task_name] += 1
+            rating_counts[item.rating or "none"] += 1
+            for item_tag in item.tags:
+                tag_counts[item_tag] += 1
+            status_counts[item.status] += 1
+
+        return CritiqueItemFilters(
+            agents=[
+                FilterOption(value=v, count=c) for v, c in sorted(agent_counts.items())
             ],
+            providers=[
+                FilterOption(value=v, count=c)
+                for v, c in sorted(provider_counts.items())
+            ],
+            models=[
+                FilterOption(value=v, count=c) for v, c in sorted(model_counts.items())
+            ],
+            sources=[
+                FilterOption(value=v, count=c) for v, c in sorted(source_counts.items())
+            ],
+            tasks=[
+                FilterOption(value=v, count=c) for v, c in sorted(task_counts.items())
+            ],
+            ratings=[
+                FilterOption(value=v, count=c) for v, c in sorted(rating_counts.items())
+            ],
+            tags=[
+                FilterOption(value=v, count=c) for v, c in sorted(tag_counts.items())
+            ],
+            statuses=[
+                FilterOption(value=v, count=c) for v, c in sorted(status_counts.items())
+            ],
+        )
+
+    @app.get(
+        "/api/jobs/{job_name}/critiques/{critique_run_name}/items",
+        response_model=PaginatedResponse[CritiqueItemSummary],
+    )
+    def list_critique_items(
+        job_name: str,
+        critique_run_name: str,
+        page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
+        page_size: int = Query(
+            default=100, ge=1, le=50000, description="Number of items per page"
+        ),
+        q: str | None = Query(default=None, description="Search query"),
+        agent: list[str] | None = Query(default=None, description="Filter by source agent"),
+        provider: list[str] | None = Query(
+            default=None, description="Filter by source model provider"
+        ),
+        model: list[str] | None = Query(default=None, description="Filter by source model"),
+        source: list[str] | None = Query(default=None, description="Filter by dataset"),
+        task: list[str] | None = Query(default=None, description="Filter by task"),
+        rating: list[str] | None = Query(default=None, description="Filter by rating"),
+        tag: list[str] | None = Query(default=None, description="Filter by tag"),
+        source_trials: str = Query(
+            default="all",
+            pattern="^(all|non_errored|errored|successful)$",
+            description="Filter by source trial outcome",
+        ),
+        status: list[str] | None = Query(default=None, description="Filter by item state"),
+        sort_by: str | None = Query(default=None, description="Field to sort by"),
+        sort_order: str = Query(default="asc", description="Sort order (asc or desc)"),
+    ) -> PaginatedResponse[CritiqueItemSummary]:
+        """List critique items for a critique run with server-side filtering and paging."""
+        job_dir = _validate_job_path(job_name)
+        if not job_dir.exists():
+            raise HTTPException(status_code=404, detail=f"Job '{job_name}' not found")
+
+        run_dir = _validate_critique_run_path(job_name, critique_run_name)
+        run_summary = _critique_run_summary(run_dir)
+        summaries = _critique_item_summaries(
+            run_dir, job_name=job_name, run_finished=run_summary.finished_at is not None
+        )
+        summaries = _filter_critique_items(
+            summaries,
+            q=q,
+            agent=agent,
+            provider=provider,
+            model=model,
+            source=source,
+            task=task,
+            rating=rating,
+            tag=tag,
+            source_trials=source_trials,
+            status=status,
+        )
+        _sort_critique_items(
+            summaries, sort_by=sort_by, sort_order=sort_order
+        )
+
+        total = len(summaries)
+        total_pages = math.ceil(total / page_size) if total > 0 else 0
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+
+        return PaginatedResponse(
+            items=summaries[start_idx:end_idx],
+            total=total,
+            page=page,
+            page_size=page_size,
+            total_pages=total_pages,
+        )
+
+    @app.get(
+        "/api/jobs/{job_name}/critiques/{critique_run_name}/heatmap",
+        response_model=CritiqueHeatmapData,
+    )
+    def get_critique_heatmap(
+        job_name: str,
+        critique_run_name: str,
+        row_by: str = Query(default="rating", pattern="^(rating|tag)$"),
+        column_by: str = Query(default="task", pattern="^(task|dataset)$"),
+        source_trials: str = Query(
+            default="all", pattern="^(all|non_errored|errored|successful)$"
+        ),
+        rating: str = Query(default="all", pattern="^(all|good|bad)$"),
+        rating_value: list[str] | None = Query(
+            default=None, description="Filter by critique rating values"
+        ),
+        tag: list[str] | None = Query(default=None, description="Filter by critique tags"),
+        status: list[str] | None = Query(
+            default=None, description="Filter by critique item lifecycle status"
+        ),
+        agent: list[str] | None = Query(default=None, description="Filter by source agent"),
+        provider: list[str] | None = Query(
+            default=None, description="Filter by source model provider"
+        ),
+        model: list[str] | None = Query(default=None, description="Filter by source model"),
+        source: list[str] | None = Query(default=None, description="Filter by dataset"),
+        task: list[str] | None = Query(default=None, description="Filter by task"),
+        q: str | None = Query(default=None, description="Search query"),
+    ) -> CritiqueHeatmapData:
+        """Build a heatmap from per-item critique artifact results."""
+        job_dir = _validate_job_path(job_name)
+        if not job_dir.exists():
+            raise HTTPException(status_code=404, detail=f"Job '{job_name}' not found")
+
+        run_dir = _validate_critique_run_path(job_name, critique_run_name)
+        run_summary = _critique_run_summary(run_dir)
+        run_finished = run_summary.finished_at is not None
+
+        rows: dict[str, CritiqueHeatmapRow] = {}
+        columns: dict[str, CritiqueHeatmapColumn] = {}
+        cell_stats: dict[tuple[str, str], dict[str, Any]] = {}
+
+        def column_for(item: CritiqueItemSummary) -> CritiqueHeatmapColumn:
+            if column_by == "dataset":
+                key = f"dataset::{item.source or ''}"
+                return CritiqueHeatmapColumn(
+                    key=key,
+                    label=item.source or "No dataset",
+                    source=item.source,
+                )
+            key = f"task::{item.source or ''}::{item.task_name or ''}"
+            label = (
+                f"{item.source} / {item.task_name}"
+                if item.source and item.task_name
+                else item.task_name or "Unknown task"
+            )
+            return CritiqueHeatmapColumn(
+                key=key,
+                label=label,
+                source=item.source,
+                task_name=item.task_name,
+            )
+
+        def row_values(item: CritiqueItemSummary) -> list[CritiqueHeatmapRow]:
+            if row_by == "tag":
+                tags = item.tags or ["No tags"]
+                return [
+                    CritiqueHeatmapRow(
+                        key=f"tag::{tag}",
+                        label=tag,
+                        kind="tag",
+                        value=None if tag == "No tags" else tag,
+                    )
+                    for tag in tags
+                ]
+
+            rating = item.rating or "No rating"
+            return [
+                CritiqueHeatmapRow(
+                    key=f"rating::{rating}",
+                    label=rating,
+                    kind="rating",
+                    value=None if rating == "No rating" else rating,
+                )
+            ]
+
+        def new_stats() -> dict[str, Any]:
+            return {
+                "n_items": 0,
+                "n_good": 0,
+                "n_bad": 0,
+                "n_errors": 0,
+                "rating_counts": {},
+                "tag_counts": {},
+            }
+
+        def increment(counter: dict[str, int], key: str) -> None:
+            counter[key] = counter.get(key, 0) + 1
+
+        items = _filter_critique_items(
+            _critique_item_summaries(
+                run_dir, job_name=job_name, run_finished=run_finished
+            ),
+            q=q,
+            agent=agent,
+            provider=provider,
+            model=model,
+            source=source,
+            task=task,
+            rating=rating_value or ([rating] if rating != "all" else None),
+            tag=tag,
+            source_trials=source_trials,
+            status=status,
+        )
+        for item in items:
+            column = column_for(item)
+            columns[column.key] = column
+            for row in row_values(item):
+                rows[row.key] = row
+                stats = cell_stats.setdefault((row.key, column.key), new_stats())
+                stats["n_items"] += 1
+                if item.rating == "good":
+                    stats["n_good"] += 1
+                elif item.rating == "bad":
+                    stats["n_bad"] += 1
+                if item.error_type:
+                    stats["n_errors"] += 1
+                if item.rating:
+                    increment(stats["rating_counts"], item.rating)
+                for tag in item.tags:
+                    increment(stats["tag_counts"], tag)
+
+        cells: dict[str, dict[str, CritiqueHeatmapCell]] = {}
+        column_bad_rates: dict[str, list[float]] = {}
+
+        for (row_key, column_key), stats in cell_stats.items():
+            n_items = int(stats["n_items"])
+            n_good = int(stats["n_good"])
+            n_bad = int(stats["n_bad"])
+            good_rate = n_good / n_items if n_items else None
+            bad_rate = n_bad / n_items if n_items else None
+            if bad_rate is not None:
+                column_bad_rates.setdefault(column_key, []).append(bad_rate)
+            cell = CritiqueHeatmapCell(
+                row_key=row_key,
+                column_key=column_key,
+                n_items=n_items,
+                n_good=n_good,
+                n_bad=n_bad,
+                n_errors=int(stats["n_errors"]),
+                good_rate=good_rate,
+                bad_rate=bad_rate,
+                rating_counts=stats["rating_counts"],
+                tag_counts=stats["tag_counts"],
+            )
+            cells.setdefault(row_key, {})[column_key] = cell
+
+        rating_order = {"bad": 0, "good": 1, "No rating": 2}
+        sorted_rows = sorted(
+            rows.values(),
+            key=lambda row: (
+                rating_order.get(row.label, 99) if row_by == "rating" else 0,
+                row.label.lower(),
+            ),
+        )
+
+        def mean(values: list[float]) -> float:
+            return sum(values) / len(values) if values else 0.0
+
+        sorted_columns = sorted(
+            columns.values(),
+            key=lambda column: (
+                -mean(column_bad_rates.get(column.key, []))
+                if column_by == "task"
+                else 0,
+                column.label.lower(),
+            ),
+        )
+
+        return CritiqueHeatmapData(
+            rows=sorted_rows,
+            columns=sorted_columns,
+            cells=cells,
         )
 
     @app.post("/api/jobs/{job_name}/summarize")

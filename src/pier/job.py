@@ -472,6 +472,8 @@ class Job:
                     "parsed; refusing to overwrite it."
                 )
             self._job_lock.created_at = existing_job_lock.created_at
+            self._job_lock.pier = existing_job_lock.pier
+            self._job_lock.invocation = existing_job_lock.invocation
             if existing_job_lock != self._job_lock:
                 raise FileExistsError(
                     f"Job directory {self.job_dir} already has a lock.json that "

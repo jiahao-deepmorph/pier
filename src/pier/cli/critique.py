@@ -301,9 +301,36 @@ def run_command(
             show_default=False,
         ),
     ] = None,
+    source_agent_names: Annotated[
+        list[str] | None,
+        Option(
+            "--source-agent",
+            help="Only critique source trials produced by this agent name. Can be used multiple times.",
+            show_default=False,
+        ),
+    ] = None,
+    source_model_names: Annotated[
+        list[str] | None,
+        Option(
+            "--source-model",
+            help="Only critique source trials produced by this model name. Can be used multiple times.",
+            show_default=False,
+        ),
+    ] = None,
     limit: Annotated[
         int | None,
         Option("--limit", help="Maximum number of selected trials to critique."),
+    ] = None,
+    sample_seed: Annotated[
+        int | None,
+        Option(
+            "--sample-seed",
+            help=(
+                "Seed for deterministic random trial sampling/order. "
+                "Applied after source filters and before --limit."
+            ),
+            show_default=False,
+        ),
     ] = None,
     passing: Annotated[
         bool,
@@ -443,7 +470,10 @@ def run_command(
         overwrite=overwrite,
         trial_names=trial_names,
         limit=limit,
+        sample_seed=sample_seed,
         filter_passing=True if passing else (False if failing else None),
+        source_agent_names=source_agent_names,
+        source_model_names=source_model_names,
     )
 
     async def _run_job():

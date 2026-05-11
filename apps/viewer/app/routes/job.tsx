@@ -18,7 +18,6 @@ import {
   ArrowUpFromLine,
   Database,
   FileText,
-  GripVertical,
   Layers,
   Search,
   Trash2,
@@ -96,7 +95,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "~/components/ui/select";
-import { IndeterminateBar } from "~/components/ui/indeterminate-bar";
 import { LoadingDots } from "~/components/ui/loading-dots";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "~/components/ui/tabs";
 import { Kbd } from "~/components/ui/kbd";
@@ -109,14 +107,19 @@ import {
   fetchTasks,
   summarizeJob,
 } from "~/lib/api";
+import {
+  ChartToolbar,
+  ChartToolbarAction,
+  ChartToolbarSelect,
+} from "~/components/ui/chart-toolbar";
 import { JobScalingChart } from "~/components/job-scaling-chart";
 import { JobScatterChart } from "~/components/job-scatter-chart";
 import { JobSlopeChart } from "~/components/job-slope-chart";
+import { ResizableHeatmapGrid } from "~/components/resizable-heatmap-grid";
 import { useDebouncedValue, useKeyboardTableNavigation } from "~/lib/hooks";
 import type { JobHeatmapTrialsFilter } from "~/lib/api";
 import type {
   JobHeatmapCell,
-  JobHeatmapColumn,
   JobHeatmapColumnBy,
   JobHeatmapData,
   JobHeatmapRowBy,
@@ -1015,139 +1018,61 @@ function HeatmapAxisBar({
         ? `${colAxisLabel} sorted alphabetically`
         : `${colAxisLabel} sorted by avg reward across ${rowAxisLabel}`;
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3 text-xs text-muted-foreground">
-      <span className="max-w-3xl">
-        {rowAxisLabel} sorted by avg reward across {colAxisLabel};{" "}
-        {colSortDescription}
-      </span>
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-2">
-          <span>Rows</span>
-          <Select value={rowBy} onValueChange={(value) => setRowBy(value)}>
-            <SelectTrigger
-              size="sm"
-              className="h-7 border-0 bg-transparent px-2 text-xs text-foreground shadow-none hover:bg-accent focus-visible:ring-0"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="config">Agent + Model</SelectItem>
-              <SelectItem value="agent">Agent</SelectItem>
-              <SelectItem value="model">Model</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="flex items-center gap-2">
-          <span>Columns</span>
-          <Select value={columnBy} onValueChange={(value) => setColumnBy(value)}>
-            <SelectTrigger
-              size="sm"
-              className="h-7 border-0 bg-transparent px-2 text-xs text-foreground shadow-none hover:bg-accent focus-visible:ring-0"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="task">Task</SelectItem>
-              <SelectItem value="dataset">Dataset</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="flex items-center gap-2">
-          <span>Color by</span>
-          <Select value={stat} onValueChange={(value) => setStat(value)}>
-            <SelectTrigger
-              size="sm"
-              className="h-7 border-0 bg-transparent px-2 text-xs text-foreground shadow-none hover:bg-accent focus-visible:ring-0"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {HEATMAP_STATS.map((option) => (
-                <SelectItem key={option.value} value={option.value}>
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <div className="flex items-center gap-2">
-              <span>Show</span>
-              <Select
-                value={trialsFilter}
-                onValueChange={(value) =>
-                  setTrialsFilter(value as JobHeatmapTrialsFilter)
-                }
-              >
-                <SelectTrigger
-                  size="sm"
-                  className="h-7 border-0 bg-transparent px-2 text-xs text-foreground shadow-none hover:bg-accent focus-visible:ring-0"
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All trials</SelectItem>
-                  <SelectItem value="non_errored">Exclude errored</SelectItem>
-                  <SelectItem value="successful">
-                    Only successful (reward = 1)
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </TooltipTrigger>
-          <TooltipContent>
-            <p className="text-xs max-w-xs">
-              Errored trials count as 0 reward by default. Choose a filter to
-              drop them, or to keep only successful (reward {">="} 1) trials.
-            </p>
-          </TooltipContent>
-        </Tooltip>
-        {isColumnOrderCustom && (
-          <button
-            type="button"
-            onClick={resetColumnOrder}
-            className="text-foreground underline-offset-2 hover:underline"
-          >
-            Reset order
-          </button>
-        )}
-      </div>
-    </div>
+    <ChartToolbar
+      description={
+        <>
+          {rowAxisLabel} sorted by avg reward across {colAxisLabel};{" "}
+          {colSortDescription}
+        </>
+      }
+    >
+      <ChartToolbarSelect
+        label="Rows"
+        value={rowBy}
+        onValueChange={(value) => setRowBy(value)}
+        options={[
+          { value: "config", label: "Agent + Model" },
+          { value: "agent", label: "Agent" },
+          { value: "model", label: "Model" },
+        ]}
+      />
+      <ChartToolbarSelect
+        label="Columns"
+        value={columnBy}
+        onValueChange={(value) => setColumnBy(value)}
+        options={[
+          { value: "task", label: "Task" },
+          { value: "dataset", label: "Dataset" },
+        ]}
+      />
+      <ChartToolbarSelect
+        label="Color by"
+        value={stat}
+        onValueChange={(value) => setStat(value)}
+        options={HEATMAP_STATS.map((option) => ({
+          value: option.value,
+          label: option.label,
+        }))}
+      />
+      <ChartToolbarSelect
+        label="Show"
+        value={trialsFilter}
+        onValueChange={(value) =>
+          setTrialsFilter(value as JobHeatmapTrialsFilter)
+        }
+        options={[
+          { value: "all", label: "All trials" },
+          { value: "non_errored", label: "Exclude errored" },
+          { value: "successful", label: "Only successful (reward = 1)" },
+        ]}
+      />
+      {isColumnOrderCustom && (
+        <ChartToolbarAction onClick={resetColumnOrder}>
+          Reset order
+        </ChartToolbarAction>
+      )}
+    </ChartToolbar>
   );
-}
-
-const ROW_WIDTH_STORAGE_KEY = "pier.heatmap.rowLabelWidth";
-const COL_HEIGHT_STORAGE_KEY = "pier.heatmap.colHeaderHeight";
-const ROW_WIDTH_MIN = 80;
-const ROW_WIDTH_MAX = 800;
-const COL_HEIGHT_MIN = 40;
-const COL_HEIGHT_MAX = 600;
-
-function arraysEqual<T>(a: T[], b: T[]): boolean {
-  return a.length === b.length && a.every((value, index) => value === b[index]);
-}
-
-function reconcileColumnOrder(
-  currentOrder: string[],
-  defaultOrder: string[]
-): string[] {
-  if (defaultOrder.length === 0) return [];
-  if (currentOrder.length === 0) return defaultOrder;
-
-  const defaultKeys = new Set(defaultOrder);
-  const keptKeys = currentOrder.filter((key) => defaultKeys.has(key));
-  const keptKeySet = new Set(keptKeys);
-  const newKeys = defaultOrder.filter((key) => !keptKeySet.has(key));
-  return [...keptKeys, ...newKeys];
-}
-
-function readStoredSize(key: string): number | null {
-  if (typeof window === "undefined") return null;
-  const raw = window.localStorage.getItem(key);
-  if (!raw) return null;
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) ? parsed : null;
 }
 
 export function JobHeatmap({
@@ -1178,6 +1103,7 @@ export function JobHeatmap({
   setTrialsFilter: (value: JobHeatmapTrialsFilter) => void;
 }) {
   const navigate = useNavigate();
+
   const numericValues = useMemo(() => {
     const values: number[] = [];
     if (!data || stat === "exceptions") return values;
@@ -1206,507 +1132,144 @@ export function JobHeatmap({
     return Math.min(Math.max(120, maxChars * 6 + 32), 400);
   }, [data]);
 
-  const [rowLabelWidthOverride, setRowLabelWidthOverride] = useState<
-    number | null
-  >(() => readStoredSize(ROW_WIDTH_STORAGE_KEY));
-  const [colHeaderHeightOverride, setColHeaderHeightOverride] = useState<
-    number | null
-  >(() => readStoredSize(COL_HEIGHT_STORAGE_KEY));
-  const [draggingKind, setDraggingKind] = useState<"row" | "col" | null>(null);
-  const [columnOrder, setColumnOrder] = useState<string[]>([]);
-  const [draggingColumnKey, setDraggingColumnKey] = useState<string | null>(
-    null
-  );
-
-  const defaultColumnOrder = useMemo(
-    () => data?.columns.map((column) => column.key) ?? [],
-    [data]
-  );
-
-  useEffect(() => {
-    setColumnOrder((currentOrder) => {
-      if (currentOrder.length === 0) return currentOrder;
-      const nextOrder = reconcileColumnOrder(currentOrder, defaultColumnOrder);
-      if (arraysEqual(nextOrder, defaultColumnOrder)) return [];
-      return arraysEqual(currentOrder, nextOrder) ? currentOrder : nextOrder;
-    });
-  }, [defaultColumnOrder]);
-
-  const effectiveColumnOrder = useMemo(
-    () =>
-      columnOrder.length > 0
-        ? reconcileColumnOrder(columnOrder, defaultColumnOrder)
-        : defaultColumnOrder,
-    [columnOrder, defaultColumnOrder]
-  );
-
-  const orderedColumns = useMemo(() => {
-    if (!data) return [];
-    const columnsByKey = new Map<string, JobHeatmapColumn>(
-      data.columns.map((column) => [column.key, column])
-    );
-    return effectiveColumnOrder
-      .map((key) => columnsByKey.get(key))
-      .filter((column): column is JobHeatmapColumn => !!column);
-  }, [data, effectiveColumnOrder]);
-  const isColumnOrderCustom =
-    columnOrder.length > 0 &&
-    !arraysEqual(effectiveColumnOrder, defaultColumnOrder);
-
-  const rowLabelWidth = rowLabelWidthOverride ?? autoRowLabelWidth;
-  const colHeaderHeight = colHeaderHeightOverride ?? autoColHeaderHeight;
-
-  const dragRef = useRef<{
-    kind: "row" | "col";
-    start: number;
-    initial: number;
-  } | null>(null);
-
-  useEffect(() => {
-    function onMove(e: MouseEvent) {
-      const drag = dragRef.current;
-      if (!drag) return;
-      if (drag.kind === "row") {
-        const next = Math.min(
-          Math.max(ROW_WIDTH_MIN, drag.initial + (e.clientX - drag.start)),
-          ROW_WIDTH_MAX
-        );
-        setRowLabelWidthOverride(Math.round(next));
-      } else {
-        const next = Math.min(
-          Math.max(COL_HEIGHT_MIN, drag.initial + (e.clientY - drag.start)),
-          COL_HEIGHT_MAX
-        );
-        setColHeaderHeightOverride(Math.round(next));
-      }
-    }
-    function onUp() {
-      const drag = dragRef.current;
-      if (!drag) return;
-      try {
-        if (drag.kind === "row") {
-          const value = Math.round(rowLabelWidth);
-          window.localStorage.setItem(
-            ROW_WIDTH_STORAGE_KEY,
-            String(value)
-          );
-        } else {
-          const value = Math.round(colHeaderHeight);
-          window.localStorage.setItem(
-            COL_HEIGHT_STORAGE_KEY,
-            String(value)
+  return (
+    <ResizableHeatmapGrid
+      rows={data?.rows}
+      columns={data?.columns}
+      getCell={(row, column) => data?.cells[row.key]?.[column.key]}
+      renderControls={({ isColumnOrderCustom, resetColumnOrder }) => (
+        <HeatmapAxisBar
+          rowBy={rowBy}
+          setRowBy={setRowBy}
+          columnBy={columnBy}
+          setColumnBy={setColumnBy}
+          stat={stat}
+          setStat={setStat}
+          trialsFilter={trialsFilter}
+          setTrialsFilter={setTrialsFilter}
+          isColumnOrderCustom={isColumnOrderCustom}
+          resetColumnOrder={resetColumnOrder}
+        />
+      )}
+      renderRowHeader={(row) => (
+        <span className="text-xs whitespace-nowrap text-right">
+          {row.label}
+        </span>
+      )}
+      renderCell={(row, column, cell) => {
+        if (!cell) {
+          return (
+            <div
+              key={`${row.key}-${column.key}`}
+              className="h-16 border-r border-b bg-muted/20"
+            />
           );
         }
-      } catch {}
-      dragRef.current = null;
-      setDraggingKind(null);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    }
-    function onKey(e: KeyboardEvent) {
-      if (e.key !== "Escape" || !dragRef.current) return;
-      // Cancel drag without persisting the in-progress size.
-      const drag = dragRef.current;
-      if (drag.kind === "row") {
-        setRowLabelWidthOverride(
-          readStoredSize(ROW_WIDTH_STORAGE_KEY) ?? null
-        );
-      } else {
-        setColHeaderHeightOverride(
-          readStoredSize(COL_HEIGHT_STORAGE_KEY) ?? null
-        );
-      }
-      dragRef.current = null;
-      setDraggingKind(null);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    }
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [rowLabelWidth, colHeaderHeight]);
 
-  const startRowDrag = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    dragRef.current = {
-      kind: "row",
-      start: e.clientX,
-      initial: rowLabelWidth,
-    };
-    setDraggingKind("row");
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-  };
+        const numericValue = getHeatmapNumericValue(cell, stat);
+        const intensity =
+          numericValue !== null ? (numericValue - minValue) / valueRange : 0;
+        const background =
+          stat === "exceptions"
+            ? cell.dominant_exception
+              ? exceptionColor(cell.dominant_exception)
+              : "transparent"
+            : `color-mix(in oklch, var(--foreground) ${(intensity * 90 + 8).toFixed(1)}%, transparent)`;
+        const url = getHeatmapTaskUrl(jobName, cell);
 
-  const startColDrag = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    dragRef.current = {
-      kind: "col",
-      start: e.clientY,
-      initial: colHeaderHeight,
-    };
-    setDraggingKind("col");
-    document.body.style.cursor = "row-resize";
-    document.body.style.userSelect = "none";
-  };
-
-  const resetRowWidth = () => {
-    setRowLabelWidthOverride(null);
-    try {
-      window.localStorage.removeItem(ROW_WIDTH_STORAGE_KEY);
-    } catch {}
-  };
-
-  const resetColHeight = () => {
-    setColHeaderHeightOverride(null);
-    try {
-      window.localStorage.removeItem(COL_HEIGHT_STORAGE_KEY);
-    } catch {}
-  };
-
-  const moveColumnToTarget = (movingKey: string, targetKey: string) => {
-    if (movingKey === targetKey) return;
-    setColumnOrder((currentOrder) => {
-      const baseOrder = reconcileColumnOrder(currentOrder, defaultColumnOrder);
-      const movingIndex = baseOrder.indexOf(movingKey);
-      const targetIndex = baseOrder.indexOf(targetKey);
-      if (movingIndex < 0 || targetIndex < 0) return currentOrder;
-
-      const nextOrder = [...baseOrder];
-      const [moving] = nextOrder.splice(movingIndex, 1);
-      nextOrder.splice(targetIndex, 0, moving);
-      if (arraysEqual(nextOrder, defaultColumnOrder)) return [];
-      return arraysEqual(currentOrder, nextOrder) ? currentOrder : nextOrder;
-    });
-  };
-
-  const startColumnDrag = (
-    e: React.DragEvent<HTMLDivElement>,
-    columnKey: string
-  ) => {
-    setDraggingColumnKey(columnKey);
-    e.dataTransfer.effectAllowed = "move";
-    e.dataTransfer.setData("text/plain", columnKey);
-  };
-
-  const allowColumnDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-  };
-
-  const enterColumnDropTarget = (
-    e: React.DragEvent<HTMLDivElement>,
-    columnKey: string
-  ) => {
-    allowColumnDrop(e);
-    const movingKey =
-      draggingColumnKey || e.dataTransfer.getData("text/plain");
-    if (movingKey) moveColumnToTarget(movingKey, columnKey);
-  };
-
-  const endColumnDrag = () => {
-    setDraggingColumnKey(null);
-  };
-
-  const resetColumnOrder = () => {
-    setColumnOrder([]);
-  };
-
-  const isBusy = isLoading || isFetching;
-  const showStaleDim = isFetching && !!data;
-
-  const axisBar = (
-    <HeatmapAxisBar
-      rowBy={rowBy}
-      setRowBy={setRowBy}
-      columnBy={columnBy}
-      setColumnBy={setColumnBy}
-      stat={stat}
-      setStat={setStat}
-      trialsFilter={trialsFilter}
-      setTrialsFilter={setTrialsFilter}
-      isColumnOrderCustom={isColumnOrderCustom}
-      resetColumnOrder={resetColumnOrder}
-    />
-  );
-
-  // Indeterminate bar positioned `-top-px` so it sits on the axis bar's
-  // existing 1px bottom border, regardless of how tall the axis bar wraps.
-  const indicator = isBusy ? (
-    <IndeterminateBar className="-top-px" />
-  ) : null;
-
-  if (isLoading) {
-    return (
-      <div className="border bg-card">
-        {axisBar}
-        <div className="relative min-h-80">{indicator}</div>
-      </div>
-    );
-  }
-
-  if (!data || data.rows.length === 0 || data.columns.length === 0) {
-    return (
-      <div className="border bg-card">
-        {axisBar}
-        <div className="relative">
-          {indicator}
-          <Empty>
-            <EmptyHeader>
-              <EmptyMedia variant="icon">
-                <Search />
-              </EmptyMedia>
-              <EmptyTitle>No heat map cells</EmptyTitle>
-              <EmptyDescription>
-                No trials match the current filters.
-              </EmptyDescription>
-            </EmptyHeader>
-          </Empty>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="border bg-card">
-      {axisBar}
-      <div className="relative">
-        {indicator}
-      <div
-        className={cn(
-          "overflow-auto transition-opacity",
-          showStaleDim && "opacity-60"
-        )}
-      >
-        <div
-          className="grid w-fit min-w-full border-r"
-          style={{
-            gridTemplateColumns: `${rowLabelWidth}px repeat(${orderedColumns.length}, minmax(72px, max-content))`,
-          }}
-        >
-        <div className="sticky top-0 left-0 z-30 bg-background border-r border-b" />
-        {orderedColumns.map((column) => (
-          <Tooltip key={column.key}>
-            <TooltipTrigger asChild>
-              <div
-                draggable
-                onDragStart={(e) => startColumnDrag(e, column.key)}
-                onDragOver={allowColumnDrop}
-                onDragEnter={(e) => enterColumnDropTarget(e, column.key)}
-                onDrop={endColumnDrag}
-                onDragEnd={endColumnDrag}
+        return (
+          <HoverCard key={`${row.key}-${column.key}`} openDelay={150}>
+            <HoverCardTrigger asChild>
+              <button
+                type="button"
+                onClick={() => {
+                  if (url) navigate(url);
+                }}
                 className={cn(
-                  "group/col sticky top-0 z-10 bg-background border-b border-r flex items-end justify-center overflow-hidden cursor-grab active:cursor-grabbing transition-colors",
-                  draggingColumnKey === column.key && "bg-accent/60"
+                  "group relative isolate flex h-16 items-center justify-center border-r border-b text-xs transition-opacity",
+                  url && "hover:opacity-85",
+                  !url && "cursor-default"
                 )}
-                style={{ height: `${colHeaderHeight}px` }}
-                aria-label={`Drag ${column.label} to reorder columns`}
               >
-                <GripVertical className="absolute top-2 left-1/2 size-3 -translate-x-1/2 text-muted-foreground/50 opacity-0 transition-opacity group-hover/col:opacity-100 group-focus/col:opacity-100" />
+                <div className="absolute inset-0" style={{ background }} />
                 <span
-                  className="px-2 py-3 text-xs whitespace-nowrap text-muted-foreground"
-                  style={{
-                    writingMode: "sideways-lr",
-                    textOrientation: "mixed",
-                  }}
+                  className={cn(
+                    "relative z-10 max-w-24 truncate px-2 font-mono tabular-nums",
+                    stat !== "exceptions" && intensity > 0.55
+                      ? "text-background"
+                      : "text-foreground"
+                  )}
                 >
-                  {column.label}
+                  {formatHeatmapValue(cell, stat)}
                 </span>
-              </div>
-            </TooltipTrigger>
-            <TooltipContent>
-              <p className="text-xs">{column.label}</p>
-              <p className="text-xs text-muted-foreground">Drag to reorder</p>
-            </TooltipContent>
-          </Tooltip>
-        ))}
-        {data.rows.map((row) => (
-          <div key={row.key} className="contents">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <div className="sticky left-0 z-10 bg-background border-r border-b flex items-center justify-end h-16 px-3 overflow-hidden">
-                  <span className="text-xs whitespace-nowrap text-right">
-                    {row.label}
-                  </span>
+              </button>
+            </HoverCardTrigger>
+            <HoverCardContent className="w-72 text-xs">
+              <div className="space-y-3">
+                <div>
+                  <div className="text-muted-foreground">Row</div>
+                  <div>{row.label}</div>
                 </div>
-              </TooltipTrigger>
-              <TooltipContent side="right">
-                <p className="text-xs">{row.label}</p>
-              </TooltipContent>
-            </Tooltip>
-            {orderedColumns.map((column) => {
-              const cell = data.cells[row.key]?.[column.key];
-              if (!cell) {
-                return (
-                  <div
-                    key={`${row.key}-${column.key}`}
-                    className="h-16 border-r border-b bg-muted/20"
-                  />
-                );
-              }
-
-              const numericValue = getHeatmapNumericValue(cell, stat);
-              const intensity =
-                numericValue !== null
-                  ? (numericValue - minValue) / valueRange
-                  : 0;
-              const background =
-                stat === "exceptions"
-                  ? cell.dominant_exception
-                    ? exceptionColor(cell.dominant_exception)
-                    : "transparent"
-                  : `color-mix(in oklch, var(--foreground) ${(intensity * 90 + 8).toFixed(1)}%, transparent)`;
-              const url = getHeatmapTaskUrl(jobName, cell);
-
-              return (
-                <HoverCard key={`${row.key}-${column.key}`} openDelay={150}>
-                  <HoverCardTrigger asChild>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (url) navigate(url);
-                      }}
-                      className={cn(
-                        "group relative isolate h-16 border-r border-b flex items-center justify-center text-xs transition-opacity",
-                        url && "hover:opacity-85",
-                        !url && "cursor-default"
-                      )}
-                    >
-                      <div
-                        className="absolute inset-0"
-                        style={{ background }}
-                      />
-                      <span
-                        className={cn(
-                          "relative z-10 px-2 font-mono tabular-nums max-w-24 truncate",
-                          stat !== "exceptions" && intensity > 0.55
-                            ? "text-background"
-                            : "text-foreground"
-                        )}
-                      >
-                        {formatHeatmapValue(cell, stat)}
-                      </span>
-                    </button>
-                  </HoverCardTrigger>
-                  <HoverCardContent className="w-72 text-xs">
-                    <div className="space-y-3">
-                      <div>
-                        <div className="text-muted-foreground">Row</div>
-                        <div>{row.label}</div>
-                      </div>
-                      <div>
-                        <div className="text-muted-foreground">Column</div>
-                        <div>{column.label}</div>
-                      </div>
-                      <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                        <div>
-                          <div className="text-muted-foreground">Avg Reward</div>
-                          <div className="font-mono">{cell.avg_reward?.toFixed(4) ?? "-"}</div>
-                        </div>
-                        <div>
-                          <div className="text-muted-foreground">Trials</div>
-                          <div className="font-mono">{cell.n_completed}/{cell.n_trials}</div>
-                        </div>
-                        <div>
-                          <div className="text-muted-foreground">Avg Duration</div>
-                          <div className="font-mono">{cell.avg_duration_ms != null ? formatDurationMs(cell.avg_duration_ms) : "-"}</div>
-                        </div>
-                        <div>
-                          <div className="text-muted-foreground">Avg Cost</div>
-                          <div className="font-mono">{formatCostUSD(cell.avg_cost_usd)}</div>
-                        </div>
-                      </div>
-                      {Object.keys(cell.exception_counts).length > 0 && (
-                        <div>
-                          <div className="text-muted-foreground mb-1">Exceptions</div>
-                          <div className="space-y-1">
-                            {Object.entries(cell.exception_counts).map(([name, count]) => (
-                              <div key={name} className="flex justify-between gap-4">
-                                <span className="truncate">{name}</span>
-                                <span className="font-mono">{count}</span>
-                              </div>
-                            ))}
+                <div>
+                  <div className="text-muted-foreground">Column</div>
+                  <div>{column.label}</div>
+                </div>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+                  <div>
+                    <div className="text-muted-foreground">Avg Reward</div>
+                    <div className="font-mono">
+                      {cell.avg_reward?.toFixed(4) ?? "-"}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">Trials</div>
+                    <div className="font-mono">
+                      {cell.n_completed}/{cell.n_trials}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">Avg Duration</div>
+                    <div className="font-mono">
+                      {cell.avg_duration_ms != null
+                        ? formatDurationMs(cell.avg_duration_ms)
+                        : "-"}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">Avg Cost</div>
+                    <div className="font-mono">
+                      {formatCostUSD(cell.avg_cost_usd)}
+                    </div>
+                  </div>
+                </div>
+                {Object.keys(cell.exception_counts).length > 0 && (
+                  <div>
+                    <div className="mb-1 text-muted-foreground">Exceptions</div>
+                    <div className="space-y-1">
+                      {Object.entries(cell.exception_counts).map(
+                        ([name, count]) => (
+                          <div key={name} className="flex justify-between gap-4">
+                            <span className="truncate">{name}</span>
+                            <span className="font-mono">{count}</span>
                           </div>
-                        </div>
+                        )
                       )}
                     </div>
-                  </HoverCardContent>
-                </HoverCard>
-              );
-            })}
-          </div>
-        ))}
-        </div>
-      </div>
-        <div
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize row label column (double-click to reset)"
-          aria-valuenow={Math.round(rowLabelWidth)}
-          aria-valuemin={ROW_WIDTH_MIN}
-          aria-valuemax={ROW_WIDTH_MAX}
-          tabIndex={-1}
-          onMouseDown={startRowDrag}
-          onDoubleClick={resetRowWidth}
-          className="group/resize-row absolute top-0 bottom-0 z-40 -translate-x-1/2 cursor-col-resize select-none"
-          style={{ left: `${rowLabelWidth}px`, width: 11 }}
-        >
-          <div
-            className={cn(
-              "pointer-events-none absolute inset-y-0 left-1/2 -translate-x-1/2 transition-all duration-150",
-              draggingKind === "row"
-                ? "w-[2px] bg-ring"
-                : "w-px bg-transparent group-hover/resize-row:w-[2px] group-hover/resize-row:bg-ring/80"
-            )}
-          />
-          <div
-            className={cn(
-              "pointer-events-none absolute inset-y-0 left-1/2 -translate-x-1/2 transition-opacity duration-150",
-              draggingKind === "row"
-                ? "w-[10px] bg-ring/15 opacity-100"
-                : "w-[10px] bg-ring/15 opacity-0 group-hover/resize-row:opacity-100"
-            )}
-          />
-        </div>
-        <div
-          role="separator"
-          aria-orientation="horizontal"
-          aria-label="Resize column header height (double-click to reset)"
-          aria-valuenow={Math.round(colHeaderHeight)}
-          aria-valuemin={COL_HEIGHT_MIN}
-          aria-valuemax={COL_HEIGHT_MAX}
-          tabIndex={-1}
-          onMouseDown={startColDrag}
-          onDoubleClick={resetColHeight}
-          className="group/resize-col absolute left-0 right-0 z-40 -translate-y-1/2 cursor-row-resize select-none"
-          style={{ top: `${colHeaderHeight}px`, height: 11 }}
-        >
-          <div
-            className={cn(
-              "pointer-events-none absolute inset-x-0 top-1/2 -translate-y-1/2 transition-all duration-150",
-              draggingKind === "col"
-                ? "h-[2px] bg-ring"
-                : "h-px bg-transparent group-hover/resize-col:h-[2px] group-hover/resize-col:bg-ring/80"
-            )}
-          />
-          <div
-            className={cn(
-              "pointer-events-none absolute inset-x-0 top-1/2 -translate-y-1/2 transition-opacity duration-150",
-              draggingKind === "col"
-                ? "h-[10px] bg-ring/15 opacity-100"
-                : "h-[10px] bg-ring/15 opacity-0 group-hover/resize-col:opacity-100"
-            )}
-          />
-        </div>
-      </div>
-    </div>
+                  </div>
+                )}
+              </div>
+            </HoverCardContent>
+          </HoverCard>
+        );
+      }}
+      isLoading={isLoading}
+      isFetching={isFetching}
+      emptyTitle="No heat map cells"
+      emptyDescription="No trials match the current filters."
+      storageKeyPrefix="pier.heatmap"
+      autoRowLabelWidth={autoRowLabelWidth}
+      autoColumnHeaderHeight={autoColHeaderHeight}
+    />
   );
 }
 

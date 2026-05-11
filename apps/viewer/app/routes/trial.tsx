@@ -925,7 +925,7 @@ function CritiqueStatusBadge({ status }: { status: string }) {
   const variant =
     status === "failed"
       ? "destructive"
-      : status === "completed" || status === "completed_with_failures"
+      : status === "completed"
         ? "secondary"
         : "outline";
 

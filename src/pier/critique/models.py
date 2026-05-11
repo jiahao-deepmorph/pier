@@ -29,7 +29,10 @@ class CritiqueConfig(BaseModel):
     overwrite: bool = False
     trial_names: list[str] | None = None
     limit: int | None = None
+    sample_seed: int | None = None
     filter_passing: bool | None = None
+    source_agent_names: list[str] | None = None
+    source_model_names: list[str] | None = None
 
 
 class CritiqueItem(BaseModel):

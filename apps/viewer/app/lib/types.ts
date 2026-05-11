@@ -106,6 +106,9 @@ export interface CritiqueRunSummary {
   finished_at: string | null;
   n_items: number;
   n_completed_items: number;
+  n_running_items: number;
+  n_pending_items: number;
+  n_missing_items: number;
   n_failed_items: number;
   agent_name: string | null;
   model_provider: string | null;
@@ -145,6 +148,48 @@ export interface CritiqueRunDetail {
   config: Record<string, unknown> | null;
   result: Record<string, unknown> | null;
   items: CritiqueItemSummary[];
+}
+
+export type CritiqueHeatmapRowBy = "rating" | "tag";
+export type CritiqueHeatmapColumnBy = "task" | "dataset";
+export type CritiqueHeatmapSourceTrialsFilter =
+  | "all"
+  | "non_errored"
+  | "errored"
+  | "successful";
+export type CritiqueHeatmapRatingFilter = "all" | "good" | "bad";
+
+export interface CritiqueHeatmapRow {
+  key: string;
+  label: string;
+  kind: string;
+  value: string | null;
+}
+
+export interface CritiqueHeatmapColumn {
+  key: string;
+  label: string;
+  source: string | null;
+  task_name: string | null;
+}
+
+export interface CritiqueHeatmapCell {
+  row_key: string;
+  column_key: string;
+  n_items: number;
+  n_good: number;
+  n_bad: number;
+  n_errors: number;
+  good_rate: number | null;
+  bad_rate: number | null;
+  rating_counts: Record<string, number>;
+  tag_counts: Record<string, number>;
+}
+
+export interface CritiqueHeatmapData {
+  rows: CritiqueHeatmapRow[];
+  columns: CritiqueHeatmapColumn[];
+  cells: Record<string, Record<string, CritiqueHeatmapCell>>;
 }
 
 export interface TrialCritiqueDetail {
@@ -407,6 +452,17 @@ export interface TaskFilters {
   models: FilterOption[];
   sources: FilterOption[];
   tasks: FilterOption[];
+}
+
+export interface CritiqueItemFilters {
+  agents: FilterOption[];
+  providers: FilterOption[];
+  models: FilterOption[];
+  sources: FilterOption[];
+  tasks: FilterOption[];
+  ratings: FilterOption[];
+  tags: FilterOption[];
+  statuses: FilterOption[];
 }
 
 export type JobHeatmapRowBy = "config" | "agent" | "model";

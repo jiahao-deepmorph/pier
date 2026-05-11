@@ -2,6 +2,12 @@ import { useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Search } from "lucide-react";
 
 import {
+  ChartToolbar,
+  ChartToolbarAction,
+  ChartToolbarSelect,
+  ChartToolbarSlider,
+} from "~/components/ui/chart-toolbar";
+import {
   Empty,
   EmptyDescription,
   EmptyHeader,
@@ -9,13 +15,6 @@ import {
   EmptyTitle,
 } from "~/components/ui/empty";
 import { IndeterminateBar } from "~/components/ui/indeterminate-bar";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "~/components/ui/select";
 import {
   bareModelName,
   FAMILY_CONFIG,
@@ -607,65 +606,50 @@ export function JobSlopeChart({
   return (
     <div className="border bg-card relative">
       {isFetching && <IndeterminateBar className="-top-px" />}
-      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-b text-xs text-muted-foreground">
-        <span className="max-w-3xl">
-          Avg reward per dataset, connected by {connectionLabel}. Showing{" "}
-          {scaleLabel}; completed runs only. Hue = model family.
-        </span>
-        <div className="flex flex-wrap items-center gap-3">
-          <ChartOptionSelect
-            label="Connect"
-            value={connectionMode}
-            onValueChange={(value) =>
-              setConnectionMode(value as JobSlopeChartConnectionMode)
-            }
-            options={[
-              { value: "model", label: "Same model" },
-              { value: "config", label: "Same agent + model" },
-            ]}
+      <ChartToolbar
+        description={
+          <>
+            Avg reward per dataset, connected by {connectionLabel}. Showing{" "}
+            {scaleLabel}; completed runs only. Hue = model family.
+          </>
+        }
+      >
+        <ChartToolbarSelect
+          label="Connect"
+          value={connectionMode}
+          onValueChange={(value) =>
+            setConnectionMode(value as JobSlopeChartConnectionMode)
+          }
+          options={[
+            { value: "model", label: "Same model" },
+            { value: "config", label: "Same agent + model" },
+          ]}
+        />
+        <ChartToolbarSelect
+          label="Scale"
+          value={scoreMode}
+          onValueChange={(value) =>
+            setScoreMode(value as JobSlopeChartScoreMode)
+          }
+          options={[
+            { value: "raw", label: "Raw reward" },
+            { value: "normalized", label: "Normalize per dataset" },
+          ]}
+        />
+        {scoreMode === "normalized" && (
+          <ChartToolbarSlider
+            label="Amount"
+            ariaLabel="Normalization amount"
+            value={Math.round(normalizationAmount * 100)}
+            onValueChange={(value) => setNormalizationAmount(value / 100)}
           />
-          <ChartOptionSelect
-            label="Scale"
-            value={scoreMode}
-            onValueChange={(value) =>
-              setScoreMode(value as JobSlopeChartScoreMode)
-            }
-            options={[
-              { value: "raw", label: "Raw reward" },
-              { value: "normalized", label: "Normalize per dataset" },
-            ]}
-          />
-          {scoreMode === "normalized" && (
-            <label className="flex items-center gap-2 text-xs">
-              <span>Amount</span>
-              <input
-                aria-label="Normalization amount"
-                type="range"
-                min={0}
-                max={100}
-                step={5}
-                value={Math.round(normalizationAmount * 100)}
-                onChange={(event) =>
-                  setNormalizationAmount(Number(event.target.value) / 100)
-                }
-                className="w-28 accent-foreground"
-              />
-              <span className="w-8 text-right tabular-nums text-foreground">
-                {Math.round(normalizationAmount * 100)}%
-              </span>
-            </label>
-          )}
-          {columnOrder !== null && (
-            <button
-              type="button"
-              onClick={resetColumnOrder}
-              className="text-foreground underline-offset-2 hover:underline"
-            >
-              Reset order
-            </button>
-          )}
-        </div>
-      </div>
+        )}
+        {columnOrder !== null && (
+          <ChartToolbarAction onClick={resetColumnOrder}>
+            Reset order
+          </ChartToolbarAction>
+        )}
+      </ChartToolbar>
       <div className="overflow-x-auto">
         <div
           className="relative mx-auto"
@@ -1063,39 +1047,6 @@ export function JobSlopeChart({
         </div>
       </div>
       <Legend series={series} hoveredKey={hoveredKey} setHovered={setHoveredKey} />
-    </div>
-  );
-}
-
-function ChartOptionSelect({
-  label,
-  value,
-  onValueChange,
-  options,
-}: {
-  label: string;
-  value: string;
-  onValueChange: (value: string) => void;
-  options: { value: string; label: string }[];
-}) {
-  return (
-    <div className="flex items-center gap-2">
-      <span>{label}</span>
-      <Select value={value} onValueChange={onValueChange}>
-        <SelectTrigger
-          size="sm"
-          className="h-7 border-0 bg-transparent px-2 text-xs text-foreground shadow-none hover:bg-accent focus-visible:ring-0"
-        >
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {options.map((option) => (
-            <SelectItem key={option.value} value={option.value}>
-              {option.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
     </div>
   );
 }

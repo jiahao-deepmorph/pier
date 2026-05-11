@@ -2,7 +2,12 @@ import { useMemo, useState } from "react";
 import { Search } from "lucide-react";
 import { useNavigate } from "react-router";
 
-import { Checkbox } from "~/components/ui/checkbox";
+import {
+  ChartToolbar,
+  ChartToolbarSelect,
+  ChartToolbarSlider,
+  ChartToolbarToggle,
+} from "~/components/ui/chart-toolbar";
 import {
   Empty,
   EmptyDescription,
@@ -11,13 +16,6 @@ import {
   EmptyTitle,
 } from "~/components/ui/empty";
 import { IndeterminateBar } from "~/components/ui/indeterminate-bar";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "~/components/ui/select";
 import {
   bareModelName,
   FAMILY_CONFIG,
@@ -744,39 +742,6 @@ function nearestTrendPoint(
   };
 }
 
-function ChartOptionSelect({
-  label,
-  value,
-  onValueChange,
-  options,
-}: {
-  label: string;
-  value: string;
-  onValueChange: (value: string) => void;
-  options: { value: string; label: string }[];
-}) {
-  return (
-    <label className="flex items-center gap-2 text-xs">
-      <span className="text-muted-foreground">{label}</span>
-      <Select value={value} onValueChange={onValueChange}>
-        <SelectTrigger
-          size="sm"
-          className="h-7 w-40 border-0 bg-transparent px-2 text-xs text-foreground shadow-none hover:bg-accent focus-visible:ring-0"
-        >
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {options.map((option) => (
-            <SelectItem key={option.value} value={option.value}>
-              {option.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </label>
-  );
-}
-
 export interface JobScalingChartProps {
   jobName: string;
   data: JobHeatmapData | undefined;
@@ -909,126 +874,93 @@ export function JobScalingChart({
   return (
     <div className="border bg-card relative">
       {isFetching && <IndeterminateBar className="-top-px" />}
-      <div className="grid gap-3 border-b px-4 py-3 text-xs lg:grid-cols-[minmax(220px,1fr)_auto] lg:items-center">
-        <span className="text-muted-foreground">
-          Performance vs task scale.
-        </span>
-        <div className="flex flex-wrap items-center gap-3 lg:justify-end">
-          <ChartOptionSelect
-            label="X metric"
-            value={metricKey}
-            onValueChange={(value) => {
-              const next = value as ScaleMetricKey;
-              setMetricKey(next);
-              const nextMetric = SCALE_METRICS.find((item) => item.key === next);
-              if (nextMetric?.prefersLog) setXScaleMode("log");
-            }}
-            options={SCALE_METRICS.map((item) => ({
-              value: item.key,
-              label: item.label,
-            }))}
-          />
-          <ChartOptionSelect
-            label="X"
-            value={xScaleMode}
-            onValueChange={(value) => setXScaleMode(value as XScaleMode)}
+      <ChartToolbar description="Performance vs task scale.">
+        <ChartToolbarSelect
+          label="X metric"
+          value={metricKey}
+          onValueChange={(value) => {
+            const next = value as ScaleMetricKey;
+            setMetricKey(next);
+            const nextMetric = SCALE_METRICS.find((item) => item.key === next);
+            if (nextMetric?.prefersLog) setXScaleMode("log");
+          }}
+          options={SCALE_METRICS.map((item) => ({
+            value: item.key,
+            label: item.label,
+          }))}
+        />
+        <ChartToolbarSelect
+          label="X"
+          value={xScaleMode}
+          onValueChange={(value) => setXScaleMode(value as XScaleMode)}
+          options={[
+            { value: "log", label: "Log scale" },
+            { value: "linear", label: "Linear" },
+          ]}
+        />
+        <ChartToolbarSelect
+          label="Trend"
+          value={trendMethod}
+          onValueChange={(value) => setTrendMethod(value as TrendMethod)}
+          options={[
+            { value: "binned", label: "Binned" },
+            { value: "local", label: "Local avg" },
+            { value: "direct", label: "Direct" },
+          ]}
+        />
+        {trendMethod !== "direct" && (
+          <ChartToolbarSelect
+            label={trendMethod === "binned" ? "Bins" : "Samples"}
+            value={binCountMode}
+            onValueChange={setBinCountMode}
             options={[
-              { value: "log", label: "Log scale" },
-              { value: "linear", label: "Linear" },
+              { value: "auto", label: "Auto" },
+              { value: "8", label: "8" },
+              { value: "12", label: "12" },
+              { value: "16", label: "16" },
+              { value: "24", label: "24" },
             ]}
           />
-          <ChartOptionSelect
-            label="Trend"
-            value={trendMethod}
-            onValueChange={(value) => setTrendMethod(value as TrendMethod)}
-            options={[
-              { value: "binned", label: "Binned" },
-              { value: "local", label: "Local avg" },
-              { value: "direct", label: "Direct" },
-            ]}
+        )}
+        <ChartToolbarSelect
+          label="Line"
+          value={interpolationMode}
+          onValueChange={(value) =>
+            setInterpolationMode(value as InterpolationMode)
+          }
+          options={[
+            { value: "linear", label: "Linear" },
+            { value: "monotone", label: "Monotone" },
+            { value: "spline", label: "Spline" },
+          ]}
+        />
+        <ChartToolbarSlider
+          label="Normalize"
+          ariaLabel="Task normalization amount"
+          value={Math.round(normalizationAmount * 100)}
+          onValueChange={(value) => setNormalizationAmount(value / 100)}
+        />
+        {trendMethod === "local" && (
+          <ChartToolbarSlider
+            label="Smooth"
+            ariaLabel="Smoothing amount"
+            value={Math.round(smoothingAmount * 100)}
+            onValueChange={(value) => setSmoothingAmount(value / 100)}
           />
-          {trendMethod !== "direct" && (
-            <ChartOptionSelect
-              label={trendMethod === "binned" ? "Bins" : "Samples"}
-              value={binCountMode}
-              onValueChange={setBinCountMode}
-              options={[
-                { value: "auto", label: "Auto" },
-                { value: "8", label: "8" },
-                { value: "12", label: "12" },
-                { value: "16", label: "16" },
-                { value: "24", label: "24" },
-              ]}
-            />
-          )}
-          <ChartOptionSelect
-            label="Line"
-            value={interpolationMode}
-            onValueChange={(value) =>
-              setInterpolationMode(value as InterpolationMode)
-            }
-            options={[
-              { value: "linear", label: "Linear" },
-              { value: "monotone", label: "Monotone" },
-              { value: "spline", label: "Spline" },
-            ]}
+        )}
+        {trendMethod !== "direct" && (
+          <ChartToolbarToggle
+            label="Band"
+            checked={showSupportBand}
+            onCheckedChange={setShowSupportBand}
           />
-          <label className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span>Normalize</span>
-            <input
-              aria-label="Task normalization amount"
-              type="range"
-              min={0}
-              max={100}
-              step={5}
-              value={Math.round(normalizationAmount * 100)}
-              onChange={(event) =>
-                setNormalizationAmount(Number(event.target.value) / 100)
-              }
-              className="w-24 accent-foreground"
-            />
-            <span className="w-8 text-right tabular-nums text-foreground">
-              {Math.round(normalizationAmount * 100)}%
-            </span>
-          </label>
-          {trendMethod === "local" && (
-            <label className="flex items-center gap-2 text-xs text-muted-foreground">
-              <span>Smooth</span>
-              <input
-                aria-label="Smoothing amount"
-                type="range"
-                min={0}
-                max={100}
-                step={5}
-                value={Math.round(smoothingAmount * 100)}
-                onChange={(event) =>
-                  setSmoothingAmount(Number(event.target.value) / 100)
-                }
-                className="w-24 accent-foreground"
-              />
-              <span className="w-8 text-right tabular-nums text-foreground">
-                {Math.round(smoothingAmount * 100)}%
-              </span>
-            </label>
-          )}
-          {trendMethod !== "direct" && (
-            <label className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Checkbox
-                checked={showSupportBand}
-                onCheckedChange={(checked) => setShowSupportBand(checked === true)}
-              />
-              <span>Band</span>
-            </label>
-          )}
-          <label className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Checkbox
-              checked={showRawPoints}
-              onCheckedChange={(checked) => setShowRawPoints(checked === true)}
-            />
-            <span>Raw points</span>
-          </label>
-        </div>
-      </div>
+        )}
+        <ChartToolbarToggle
+          label="Raw points"
+          checked={showRawPoints}
+          onCheckedChange={setShowRawPoints}
+        />
+      </ChartToolbar>
 
       <div className="overflow-x-auto">
         <div className="relative mx-auto" style={{ width: WIDTH }}>

@@ -275,6 +275,74 @@ def test_resume_uses_current_prompt_path(tmp_path):
     assert resumed_runner.config.prompt_path == current_prompt
 
 
+def test_resume_allows_changing_concurrency(tmp_path):
+    source_job_dir = tmp_path / "job"
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("Prompt", encoding="utf-8")
+
+    original_runner = CritiqueRunner(
+        CritiqueConfig(
+            run_name="run",
+            source_job_dir=source_job_dir,
+            prompt_path=prompt_path,
+            agent=AgentConfig(),
+            n_concurrent=1,
+        )
+    )
+    original_runner._prepare_critique_dir()
+    (original_runner.critique_dir / "config.json").write_text(
+        original_runner.config.model_dump_json(indent=4), encoding="utf-8"
+    )
+
+    resumed_runner = CritiqueRunner(
+        CritiqueConfig(
+            run_name="run",
+            source_job_dir=source_job_dir,
+            prompt_path=prompt_path,
+            agent=AgentConfig(),
+            n_concurrent=100,
+        )
+    )
+    resumed_runner._prepare_critique_dir()
+
+    assert resumed_runner.config.n_concurrent == 100
+
+
+def test_resume_allows_changing_limit(tmp_path):
+    source_job_dir = tmp_path / "job"
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("Prompt", encoding="utf-8")
+
+    original_runner = CritiqueRunner(
+        CritiqueConfig(
+            run_name="run",
+            source_job_dir=source_job_dir,
+            prompt_path=prompt_path,
+            agent=AgentConfig(),
+            sample_seed=13,
+            limit=100,
+        )
+    )
+    original_runner._prepare_critique_dir()
+    (original_runner.critique_dir / "config.json").write_text(
+        original_runner.config.model_dump_json(indent=4), encoding="utf-8"
+    )
+
+    resumed_runner = CritiqueRunner(
+        CritiqueConfig(
+            run_name="run",
+            source_job_dir=source_job_dir,
+            prompt_path=prompt_path,
+            agent=AgentConfig(),
+            sample_seed=13,
+            limit=None,
+        )
+    )
+    resumed_runner._prepare_critique_dir()
+
+    assert resumed_runner.config.limit is None
+
+
 def test_collect_items_prefers_source_job_lock_order(tmp_path):
     job_dir = tmp_path / "job"
     task_a = tmp_path / "tasks" / "a"
@@ -418,3 +486,152 @@ def test_collect_items_falls_back_to_trial_dir_order_without_lock(tmp_path):
         "trial-a",
         "trial-z",
     ]
+
+
+def test_collect_items_filters_by_source_model_without_matching_prefixes(tmp_path):
+    job_dir = tmp_path / "job"
+    task_a = tmp_path / "tasks" / "a"
+    task_b = tmp_path / "tasks" / "b"
+    task_a.mkdir(parents=True)
+    task_b.mkdir(parents=True)
+    job_dir.mkdir()
+    (job_dir / "job.log").write_text("", encoding="utf-8")
+
+    _write_source_trial(
+        job_dir,
+        trial_name="trial-a",
+        task_dir=task_a,
+        task_checksum="a" * 64,
+        agent=AgentConfig(name="mini-swe-agent", model_name="openai/gpt-5.4"),
+    )
+    _write_source_trial(
+        job_dir,
+        trial_name="trial-b",
+        task_dir=task_b,
+        task_checksum="b" * 64,
+        agent=AgentConfig(name="mini-swe-agent", model_name="openai/gpt-5.4-mini"),
+    )
+
+    runner = CritiqueRunner(
+        CritiqueConfig(
+            run_name="run",
+            source_job_dir=job_dir,
+            prompt_path=tmp_path / "prompt.md",
+            agent=AgentConfig(),
+            source_model_names=["gpt-5.4"],
+        )
+    )
+
+    assert [item.source_trial_name for item in runner.collect_items()] == ["trial-a"]
+
+
+def test_collect_items_filters_by_source_agent(tmp_path):
+    job_dir = tmp_path / "job"
+    task_a = tmp_path / "tasks" / "a"
+    task_b = tmp_path / "tasks" / "b"
+    task_a.mkdir(parents=True)
+    task_b.mkdir(parents=True)
+    job_dir.mkdir()
+    (job_dir / "job.log").write_text("", encoding="utf-8")
+
+    _write_source_trial(
+        job_dir,
+        trial_name="trial-a",
+        task_dir=task_a,
+        task_checksum="a" * 64,
+        agent=AgentConfig(name="mini-swe-agent", model_name="gpt-5.5"),
+    )
+    _write_source_trial(
+        job_dir,
+        trial_name="trial-b",
+        task_dir=task_b,
+        task_checksum="b" * 64,
+        agent=AgentConfig(name="codex", model_name="gpt-5.5"),
+    )
+
+    runner = CritiqueRunner(
+        CritiqueConfig(
+            run_name="run",
+            source_job_dir=job_dir,
+            prompt_path=tmp_path / "prompt.md",
+            agent=AgentConfig(),
+            source_agent_names=["codex"],
+        )
+    )
+
+    assert [item.source_trial_name for item in runner.collect_items()] == ["trial-b"]
+
+
+def test_collect_items_applies_sample_seed_before_limit(tmp_path):
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    (job_dir / "job.log").write_text("", encoding="utf-8")
+
+    agent = AgentConfig(name="mini-swe-agent", model_name="gpt-5.5")
+    for suffix in ["a", "b", "c", "d"]:
+        task_dir = tmp_path / "tasks" / suffix
+        task_dir.mkdir(parents=True)
+        _write_source_trial(
+            job_dir,
+            trial_name=f"trial-{suffix}",
+            task_dir=task_dir,
+            task_checksum=suffix * 64,
+            agent=agent,
+        )
+
+    runner = CritiqueRunner(
+        CritiqueConfig(
+            run_name="run",
+            source_job_dir=job_dir,
+            prompt_path=tmp_path / "prompt.md",
+            agent=AgentConfig(),
+            sample_seed=1,
+            limit=2,
+        )
+    )
+
+    assert [item.source_trial_name for item in runner.collect_items()] == [
+        "trial-d",
+        "trial-a",
+    ]
+
+
+def test_redacts_rendered_instruction_from_codex_jsonl(tmp_path):
+    instruction = "private critique prompt\nwith runtime paths"
+    session_path = tmp_path / "session.jsonl"
+    session_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": instruction}],
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "done"}],
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    trial = CritiqueTrial.__new__(CritiqueTrial)
+    trial._redact_instruction_from_jsonl(session_path, instruction)
+
+    redacted = session_path.read_text(encoding="utf-8")
+    assert instruction not in redacted
+    assert "[redacted critique prompt]" in redacted
+    assert "done" in redacted

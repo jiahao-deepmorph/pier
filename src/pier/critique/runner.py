@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import random
 import re
 import shlex
 import shutil
@@ -41,6 +42,7 @@ CRITIQUE_TRIAL_DIRNAME = "trial"
 CRITIQUE_RESULT_FILENAME = "critique-result.json"
 CRITIQUE_MARKDOWN_FILENAME = "critique-result.md"
 CRITIQUE_RUNS_DIRNAME = ".critiques"
+REDACTED_CRITIQUE_PROMPT = "[redacted critique prompt]"
 
 
 @dataclass(frozen=True)
@@ -144,6 +146,44 @@ def _is_passing_trial(result: TrialResult) -> bool:
     return has_reward_one and result.exception_info is None
 
 
+def _candidate_names(*values: str | None) -> set[str]:
+    names: set[str] = set()
+    for value in values:
+        if not value:
+            continue
+        names.add(value)
+        if "/" in value:
+            names.add(value.split("/", 1)[1])
+            names.add(value.rsplit("/", 1)[1])
+    return names
+
+
+def _matches_name_filter(candidates: set[str], wanted: list[str] | None) -> bool:
+    if not wanted:
+        return True
+    normalized_candidates = {candidate.lower() for candidate in candidates}
+    return any(name.lower() in normalized_candidates for name in wanted)
+
+
+def _source_agent_name_candidates(result: TrialResult) -> set[str]:
+    return _candidate_names(result.agent_info.name, result.config.agent.name)
+
+
+def _source_model_name_candidates(result: TrialResult) -> set[str]:
+    model_info = result.agent_info.model_info
+    model_name = model_info.name if model_info is not None else None
+    provider_model_name = (
+        f"{model_info.provider}/{model_info.name}"
+        if model_info is not None and model_info.provider is not None
+        else None
+    )
+    return _candidate_names(
+        model_name,
+        provider_model_name,
+        result.config.agent.model_name,
+    )
+
+
 class CritiqueRunner:
     def __init__(self, config: CritiqueConfig):
         self.config = config
@@ -189,6 +229,18 @@ class CritiqueRunner:
 
         items: list[CritiqueItem] = []
         for trial_dir, source_result in trial_records:
+            if not _matches_name_filter(
+                _source_agent_name_candidates(source_result),
+                self.config.source_agent_names,
+            ):
+                continue
+
+            if not _matches_name_filter(
+                _source_model_name_candidates(source_result),
+                self.config.source_model_names,
+            ):
+                continue
+
             if self.config.filter_passing is not None:
                 is_passing = _is_passing_trial(source_result)
                 if self.config.filter_passing != is_passing:
@@ -207,6 +259,9 @@ class CritiqueRunner:
                     task_dir=task_dir,
                 )
             )
+
+        if self.config.sample_seed is not None:
+            random.Random(self.config.sample_seed).shuffle(items)
 
         if self.config.limit is not None:
             items = items[: self.config.limit]
@@ -365,7 +420,9 @@ class CritiqueRunner:
 
     @staticmethod
     def _resume_key(config: CritiqueConfig) -> dict[str, Any]:
-        return config.model_dump(exclude={"overwrite", "prompt_path"})
+        return config.model_dump(
+            exclude={"overwrite", "prompt_path", "n_concurrent", "limit"}
+        )
 
     async def run_item(self, item: CritiqueItem) -> CritiqueItemResult:
         paths = CritiquePaths(self.critique_dir / item.source_trial_name)
@@ -445,6 +502,7 @@ class CritiqueTrial:
         )
         self._agent = self._execution.agent
         self._environment = self._execution.environment
+        self._rendered_instruction: str | None = None
 
         self._result = CritiqueItemResult(
             source_trial_name=item.source_trial_name,
@@ -509,6 +567,7 @@ class CritiqueTrial:
                 source_dir=self._environment.env_paths.agent_dir.as_posix(),
                 target_dir=self._critique_paths.agent_dir,
             )
+            self._redact_rendered_instruction_from_local_logs()
             self._maybe_populate_agent_context(self.result.agent_result)
             await self._download_artifacts()
             self._parse_critique_result()
@@ -575,8 +634,10 @@ class CritiqueTrial:
         self.result.agent_execution = TimingInfo(started_at=datetime.now(timezone.utc))
         try:
             self.result.agent_result = AgentContext()
+            instruction = self._render_instruction()
+            self._rendered_instruction = instruction
             await self._execution.run_agent(
-                instruction=self._render_instruction(),
+                instruction=instruction,
                 context=self.result.agent_result,
             )
         finally:
@@ -651,6 +712,97 @@ class CritiqueTrial:
         ):
             return
         self._agent.populate_context_post_run(agent_result)
+
+    def _redact_rendered_instruction_from_local_logs(self) -> None:
+        instruction = self._rendered_instruction
+        if not instruction:
+            return
+
+        candidate_paths = [self._critique_paths.log_path]
+        if self._critique_paths.agent_dir.exists():
+            candidate_paths.extend(
+                path
+                for path in self._critique_paths.agent_dir.rglob("*")
+                if path.is_file()
+            )
+
+        for path in candidate_paths:
+            if path.suffix == ".jsonl":
+                self._redact_instruction_from_jsonl(path, instruction)
+            else:
+                self._redact_instruction_from_text(path, instruction)
+
+    def _redact_instruction_from_text(self, path: Path, instruction: str) -> None:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return
+        if instruction not in text:
+            return
+        path.write_text(
+            text.replace(instruction, REDACTED_CRITIQUE_PROMPT),
+            encoding="utf-8",
+        )
+
+    def _redact_instruction_from_jsonl(self, path: Path, instruction: str) -> None:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            return
+
+        changed = False
+        redacted_lines: list[str] = []
+        for line in lines:
+            if not line.strip():
+                redacted_lines.append(line)
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                redacted_line = line.replace(instruction, REDACTED_CRITIQUE_PROMPT)
+                changed = changed or redacted_line != line
+                redacted_lines.append(redacted_line)
+                continue
+
+            redacted_payload, did_change = self._redact_instruction_value(
+                payload, instruction
+            )
+            changed = changed or did_change
+            redacted_lines.append(
+                json.dumps(redacted_payload, sort_keys=True, separators=(",", ":"))
+            )
+
+        if changed:
+            path.write_text("\n".join(redacted_lines) + "\n", encoding="utf-8")
+
+    def _redact_instruction_value(
+        self, value: Any, instruction: str
+    ) -> tuple[Any, bool]:
+        if isinstance(value, str):
+            if instruction in value:
+                return value.replace(instruction, REDACTED_CRITIQUE_PROMPT), True
+            return value, False
+        if isinstance(value, list):
+            changed = False
+            redacted_items = []
+            for item in value:
+                redacted_item, did_change = self._redact_instruction_value(
+                    item, instruction
+                )
+                changed = changed or did_change
+                redacted_items.append(redacted_item)
+            return redacted_items, changed
+        if isinstance(value, dict):
+            changed = False
+            redacted_dict = {}
+            for key, item in value.items():
+                redacted_item, did_change = self._redact_instruction_value(
+                    item, instruction
+                )
+                changed = changed or did_change
+                redacted_dict[key] = redacted_item
+            return redacted_dict, changed
+        return value, False
 
     async def _download_artifacts(self) -> None:
         self._critique_paths.artifacts_dir.mkdir(parents=True, exist_ok=True)
@@ -751,6 +903,7 @@ class CritiqueTrial:
                 source_dir=self._environment.env_paths.agent_dir.as_posix(),
                 target_dir=self._critique_paths.agent_dir,
             )
+            self._redact_rendered_instruction_from_local_logs()
             self._maybe_populate_agent_context(self.result.agent_result)
         except Exception:
             pass
