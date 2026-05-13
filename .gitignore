@@ -224,3 +224,7 @@ dataset
 
 # Viewer static files (built in CI)
 src/pier/viewer/static/
+
+# Claude Code
+.claude/scheduled_tasks.lock
+.claude/scheduled_tasks.json
