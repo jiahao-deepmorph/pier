@@ -6,13 +6,22 @@ import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from pathlib import Path, PurePath
+from typing import Literal
 
 from pydantic import BaseModel
 
-from pier.environments.capabilities import EnvironmentCapabilities
+from pier.environments.capabilities import (
+    EnvironmentCapabilities,
+    EnvironmentResourceCapabilities,
+)
+from pier.environments.resource_policies import (
+    validate_resource_capabilities,
+    validate_resource_values,
+)
 from pier.models.agent.install import AgentInstallSpec
 from pier.models.agent.network import NetworkAllowlist
 from pier.models.task.config import EnvironmentConfig, HealthcheckConfig, TaskOS
+from pier.models.trial.config import ResourceMode
 from pier.models.trial.paths import EnvironmentPaths, TrialPaths
 from pier.utils.env import resolve_env_vars
 from pier.utils.logger import logger as global_logger
@@ -60,6 +69,8 @@ class BaseEnvironment(ABC):
         override_memory_mb: int | None = None,
         override_storage_mb: int | None = None,
         override_gpus: int | None = None,
+        cpu_enforcement_policy: ResourceMode = ResourceMode.AUTO,
+        memory_enforcement_policy: ResourceMode = ResourceMode.AUTO,
         suppress_override_warnings: bool = False,
         persistent_env: dict[str, str] | None = None,
         agent_install_spec: AgentInstallSpec | None = None,
@@ -93,6 +104,8 @@ class BaseEnvironment(ABC):
         self._override_memory_mb = override_memory_mb
         self._override_storage_mb = override_storage_mb
         self._override_gpus = override_gpus
+        self._cpu_resource_mode = ResourceMode(cpu_enforcement_policy)
+        self._memory_resource_mode = ResourceMode(memory_enforcement_policy)
         self._suppress_override_warnings = suppress_override_warnings
         self._persistent_env: dict[str, str] = persistent_env or {}
         self.agent_install_spec = agent_install_spec
@@ -104,6 +117,7 @@ class BaseEnvironment(ABC):
         self._maybe_resolve_task_env()
 
         self._validate_definition()
+        self._validate_resource_mode_support()
         self._validate_gpu_support()
         self._validate_internet_config()
         self._validate_agent_setup_options()
@@ -151,6 +165,97 @@ class BaseEnvironment(ABC):
                     "task from its intended configuration. This could disqualify you "
                     "from leaderboard submissions for some benchmarks."
                 )
+
+    def _resource_mode(self, resource: Literal["cpu", "memory"]) -> ResourceMode:
+        return (
+            getattr(self, "_cpu_resource_mode", ResourceMode.AUTO)
+            if resource == "cpu"
+            else getattr(self, "_memory_resource_mode", ResourceMode.AUTO)
+        )
+
+    def _resource_value(self, resource: Literal["cpu", "memory"]) -> int | None:
+        if self._resource_mode(resource) == ResourceMode.IGNORE:
+            return None
+        if resource == "cpu":
+            return self.task_env_config.cpus
+        return self.task_env_config.memory_mb
+
+    def _resource_request_value(
+        self,
+        resource: Literal["cpu", "memory"],
+        *,
+        auto_mode: ResourceMode,
+    ) -> int | None:
+        return self._resource_policy_value(
+            resource,
+            target=ResourceMode.REQUEST,
+            auto_mode=auto_mode,
+        )
+
+    def _resource_limit_value(
+        self,
+        resource: Literal["cpu", "memory"],
+        *,
+        auto_mode: ResourceMode,
+    ) -> int | None:
+        return self._resource_policy_value(
+            resource,
+            target=ResourceMode.LIMIT,
+            auto_mode=auto_mode,
+        )
+
+    def _resource_policy_value(
+        self,
+        resource: Literal["cpu", "memory"],
+        *,
+        target: ResourceMode,
+        auto_mode: ResourceMode,
+    ) -> int | None:
+        value = self._resource_value(resource)
+        if value is None:
+            return None
+        mode = self._resource_mode(resource)
+        if mode == ResourceMode.AUTO:
+            mode = auto_mode
+        if mode == target or mode == ResourceMode.GUARANTEE:
+            return value
+        return None
+
+    @property
+    def _effective_cpus(self) -> int | None:
+        return self._resource_value("cpu")
+
+    @property
+    def _effective_memory_mb(self) -> int | None:
+        return self._resource_value("memory")
+
+    @property
+    def _effective_storage_mb(self) -> int | None:
+        return self.task_env_config.storage_mb
+
+    @property
+    def _effective_gpus(self) -> int:
+        return self.task_env_config.gpus or 0
+
+    def _validate_resource_mode_support(self) -> None:
+        resource_capabilities = type(self).resource_capabilities()
+        if resource_capabilities is None:
+            return
+
+        environment_type = self.type()
+        environment_label = str(getattr(environment_type, "value", environment_type))
+        validate_resource_capabilities(
+            environment_label=environment_label,
+            resource_capabilities=resource_capabilities,
+            cpu_enforcement_policy=self._cpu_resource_mode,
+            memory_enforcement_policy=self._memory_resource_mode,
+        )
+        validate_resource_values(
+            cpu_enforcement_policy=self._cpu_resource_mode,
+            memory_enforcement_policy=self._memory_resource_mode,
+            cpus=self.task_env_config.cpus,
+            memory_mb=self.task_env_config.memory_mb,
+        )
 
     def _resolve_user(self, user: str | int | None) -> str | int | None:
         """Resolve the effective user for a command.
@@ -293,6 +398,10 @@ class BaseEnvironment(ABC):
                 kwargs[new_name] = getattr(self, old_name)
         return EnvironmentCapabilities(**kwargs)
 
+    @classmethod
+    def resource_capabilities(cls) -> EnvironmentResourceCapabilities | None:
+        return None
+
     @abstractmethod
     def _validate_definition(self):
         """
@@ -310,9 +419,9 @@ class BaseEnvironment(ABC):
         Raises:
             RuntimeError: If the task requires GPU but the environment doesn't support it.
         """
-        if self.task_env_config.gpus > 0 and not self.capabilities.gpus:
+        if self._effective_gpus > 0 and not self.capabilities.gpus:
             raise RuntimeError(
-                f"Task requires {self.task_env_config.gpus} GPU(s) but {self.type()} "
+                f"Task requires {self._effective_gpus} GPU(s) but {self.type()} "
                 f"environment does not support GPU allocation. Please use a GPU-capable "
                 f"environment type (e.g., Modal, Docker with nvidia-docker)."
             )

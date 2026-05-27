@@ -20,6 +20,13 @@ class TaskOS(str, Enum):
     WINDOWS = "windows"
 
 
+class VerifierEnvironmentMode(str, Enum):
+    """Whether the verifier runs in the agent's environment or its own."""
+
+    SHARED = "shared"
+    SEPARATE = "separate"
+
+
 class Author(BaseModel):
     """Author information for a package or dataset."""
 
@@ -79,6 +86,39 @@ class VerifierConfig(BaseModel):
         default=None,
         description="Username or UID to run the verifier as. None uses the environment's default USER (e.g., root).",
     )
+    environment_mode: VerifierEnvironmentMode | None = Field(
+        default=None,
+        description=(
+            "Whether the verifier runs in the agent's environment ('shared') "
+            "or in a dedicated container ('separate'). When omitted: defaults "
+            "to 'separate' if a verifier 'environment' is set, otherwise "
+            "'shared'."
+        ),
+    )
+    environment: "EnvironmentConfig | None" = Field(
+        default=None,
+        description=(
+            "Environment definition for the separate verifier container. "
+            "Same schema as the top-level [environment] section. When set "
+            "without an explicit environment_mode, implies "
+            "environment_mode='separate'. When unset with "
+            "environment_mode='separate', a fresh copy of the top-level "
+            "[environment] is used. Conflicts with environment_mode='shared'."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_mode_env_consistency(self) -> "VerifierConfig":
+        if (
+            self.environment_mode == VerifierEnvironmentMode.SHARED
+            and self.environment is not None
+        ):
+            raise ValueError(
+                "[verifier].environment_mode='shared' is incompatible with "
+                "[verifier.environment]; either omit the environment or set "
+                "environment_mode='separate'."
+            )
+        return self
 
 
 class SolutionConfig(BaseModel):
@@ -134,8 +174,8 @@ class EnvironmentConfig(BaseModel):
         "Windows containers (requires Docker Desktop in Windows container "
         "mode on a Windows host).",
     )
-    cpus: int = 1
-    memory_mb: int = 2048
+    cpus: int | None = None
+    memory_mb: int | None = None
     storage_mb: int = 10240
     gpus: int = 0
     gpu_types: list[str] | None = Field(
@@ -205,28 +245,48 @@ class EnvironmentConfig(BaseModel):
                 "'512M', etc."
             )
 
-    @model_validator(mode="after")
-    def handle_deprecated_fields(self) -> "EnvironmentConfig":
-        """Map deprecated memory/storage fields to new memory_mb/storage_mb fields."""
-        if self.memory is not None:
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_resource_fields(cls, data: Any) -> Any:
+        """Map deprecated memory/storage fields to memory_mb/storage_mb."""
+        if not isinstance(data, dict):
+            return data
+
+        if "memory" in data:
             warnings.warn(
                 "The 'memory' field is deprecated. Use 'memory_mb' instead.",
                 DeprecationWarning,
                 stacklevel=2,
             )
-            self.memory_mb = self._parse_size_to_mb(self.memory)
-            self.memory = None
+            memory = data.pop("memory")
+            if isinstance(memory, str):
+                memory_mb = cls._parse_size_to_mb(memory)
+                if "memory_mb" in data and data["memory_mb"] != memory_mb:
+                    raise ValueError(
+                        "Conflicting 'memory' and 'memory_mb' values: "
+                        f"memory={memory!r} ({memory_mb} MB) != "
+                        f"memory_mb={data['memory_mb']!r}."
+                    )
+                data.setdefault("memory_mb", memory_mb)
 
-        if self.storage is not None:
+        if "storage" in data:
             warnings.warn(
                 "The 'storage' field is deprecated. Use 'storage_mb' instead.",
                 DeprecationWarning,
                 stacklevel=2,
             )
-            self.storage_mb = self._parse_size_to_mb(self.storage)
-            self.storage = None
+            storage = data.pop("storage")
+            if isinstance(storage, str):
+                storage_mb = cls._parse_size_to_mb(storage)
+                if "storage_mb" in data and data["storage_mb"] != storage_mb:
+                    raise ValueError(
+                        "Conflicting 'storage' and 'storage_mb' values: "
+                        f"storage={storage!r} ({storage_mb} MB) != "
+                        f"storage_mb={data['storage_mb']!r}."
+                    )
+                data.setdefault("storage_mb", storage_mb)
 
-        return self
+        return data
 
 
 class MCPServerConfig(BaseModel):
@@ -383,7 +443,7 @@ class TaskConfig(BaseModel):
                 parts.append(toml.dumps({field: value}))
                 emitted.add(field)
 
-        return "\n".join(part.strip() for part in parts if part.strip()) + "\n"
+        return "\n\n".join(part.strip() for part in parts if part.strip()) + "\n"
 
     @staticmethod
     def _is_toml_table_like(value: Any) -> bool:

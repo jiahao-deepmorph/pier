@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import shlex
@@ -18,10 +19,19 @@ from tenacity import (
 
 from pier.agents.installed.base import BaseInstalledAgent, NonZeroAgentExitCodeError
 from pier.environments.base import HealthcheckError
+from pier.environments.factory import EnvironmentFactory
 from pier.models.agent.context import AgentContext
+from pier.models.task.config import (
+    EnvironmentConfig as TaskEnvironmentConfig,
+)
 from pier.models.task.config import MultiStepRewardStrategy, StepConfig
 from pier.models.task.task import Task
-from pier.models.trial.config import ArtifactConfig, TrialConfig
+from pier.models.task.verifier_mode import resolve_effective_verifier_env_config
+from pier.models.trial.config import (
+    ArtifactConfig,
+    ServiceVolumeConfig,
+    TrialConfig,
+)
 from pier.models.trial.paths import TrialPaths
 from pier.models.trial.result import (
     ExceptionInfo,
@@ -55,6 +65,7 @@ __all__ = [
 
 
 TrialHookCallback = Callable[[TrialHookEvent], Awaitable[None]]
+_MAX_VERIFIER_ENV_SESSION_ID_LEN = 63
 
 
 def _aggregate_step_rewards(
@@ -315,15 +326,8 @@ class Trial:
     )
     async def _verify_with_retry(self) -> None:
         try:
-            verifier = Verifier(
-                task=self._task,
-                trial_paths=self._trial_paths,
-                environment=self._environment,
-                override_env=self.config.verifier.env or None,
-            )
-
             self.result.verifier_result = await asyncio.wait_for(
-                verifier.verify(),
+                self._verify_once(step_cfg=None),
                 timeout=self._verifier_timeout_sec,
             )
         except asyncio.TimeoutError as e:
@@ -332,6 +336,116 @@ class Trial:
                     self._verifier_timeout_sec
                 } seconds"
             ) from e
+
+    async def _verify_once(
+        self,
+        *,
+        step_cfg: StepConfig | None,
+        verifier_env: dict[str, str] | None = None,
+    ) -> VerifierResult:
+        separate_env_config = resolve_effective_verifier_env_config(
+            self._task.config,
+            step_cfg,
+        )
+        if separate_env_config is None:
+            verifier = Verifier(
+                task=self._task,
+                trial_paths=self._trial_paths,
+                environment=self._environment,
+                override_env=self.config.verifier.env or None,
+                logger=self._logger,
+                verifier_env=verifier_env,
+                step_name=step_cfg.name if step_cfg is not None else None,
+            )
+            return await verifier.verify()
+
+        return await self._verify_with_separate_environment(
+            separate_env_config,
+            key=step_cfg.name if step_cfg is not None else "trial",
+            step_cfg=step_cfg,
+            verifier_env=verifier_env,
+        )
+
+    async def _verify_with_separate_environment(
+        self,
+        env_config: TaskEnvironmentConfig,
+        *,
+        key: str,
+        step_cfg: StepConfig | None,
+        verifier_env: dict[str, str] | None,
+    ) -> VerifierResult:
+        env = EnvironmentFactory.create_environment_from_config(
+            config=self.config.environment,
+            environment_dir=self._verifier_env_build_context(step_cfg),
+            environment_name=self._task.name,
+            session_id=self._separate_verifier_session_id(key),
+            trial_paths=self._trial_paths,
+            task_env_config=env_config,
+            logger=self._logger,
+            mounts_json=self._verifier_env_mounts(env_config),
+            agent_install_spec=None,
+            network_allowlist=None,
+            default_user=(
+                step_cfg.verifier.user
+                if step_cfg is not None and step_cfg.verifier.user is not None
+                else self._task.config.verifier.user
+            ),
+        )
+        try:
+            await env.start(force_build=False)
+            env_paths = env.env_paths
+            await env.reset_dirs(
+                remove_dirs=[env_paths.verifier_dir],
+                create_dirs=[env_paths.verifier_dir],
+                chmod_dirs=[env_paths.verifier_dir],
+            )
+            verifier = Verifier(
+                task=self._task,
+                trial_paths=self._trial_paths,
+                environment=env,
+                override_env=self.config.verifier.env or None,
+                logger=self._logger,
+                skip_tests_upload=True,
+                verifier_env=verifier_env,
+                step_name=step_cfg.name if step_cfg is not None else None,
+            )
+            return await verifier.verify()
+        finally:
+            try:
+                await asyncio.shield(env.stop(delete=self.config.environment.delete))
+            except Exception as exc:
+                self._logger.debug(f"Failed to stop verifier env '{key}': {exc}")
+
+    def _verifier_env_mounts(
+        self,
+        env_config: TaskEnvironmentConfig,
+    ) -> list[ServiceVolumeConfig]:
+        env_paths = self._environment.env_paths.for_os(env_config.os)
+        return [
+            {
+                "type": "bind",
+                "source": self._trial_paths.verifier_dir.resolve().as_posix(),
+                "target": str(env_paths.verifier_dir),
+            }
+        ]
+
+    def _verifier_env_build_context(self, step_cfg: StepConfig | None) -> Path:
+        if step_cfg is not None:
+            step_tests_dir = self._task.paths.step_tests_dir(step_cfg.name)
+            if step_tests_dir.exists():
+                return step_tests_dir
+        return self._task.paths.tests_dir
+
+    def _separate_verifier_session_id(self, key: str) -> str:
+        raw = f"{self.config.trial_name}__verifier__{key}"
+        safe = "".join(char if char.isalnum() or char in "-._" else "_" for char in raw)
+        if len(safe) <= _MAX_VERIFIER_ENV_SESSION_ID_LEN:
+            return safe
+
+        digest = hashlib.sha1(safe.encode()).hexdigest()[:8]
+        suffix = f"__{digest}"
+        prefix = safe[: _MAX_VERIFIER_ENV_SESSION_ID_LEN - len(suffix)].rstrip("-._")
+        return f"{prefix}{suffix}"
 
     async def _cleanup_and_finalize(self) -> None:
         try:
@@ -507,17 +621,12 @@ class Trial:
                 chmod_dirs=[env_paths.verifier_dir],
             )
 
-            verifier = Verifier(
-                task=self._task,
-                trial_paths=self._trial_paths,
-                environment=self._environment,
-                override_env=self.config.verifier.env or None,
-                logger=self._logger,
-                verifier_env=step_cfg.verifier.env or None,
-                step_name=step_cfg.name,
-            )
             step_result.verifier_result = await asyncio.wait_for(
-                verifier.verify(), timeout=timeout
+                self._verify_once(
+                    step_cfg=step_cfg,
+                    verifier_env=step_cfg.verifier.env or None,
+                ),
+                timeout=timeout,
             )
         except Exception as e:
             if step_result.exception_info is None:

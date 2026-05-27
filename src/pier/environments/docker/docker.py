@@ -1,12 +1,12 @@
 import asyncio
 import asyncio.subprocess
-import json
 import os
 import re
 import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -27,10 +27,13 @@ from pier.environments.docker import (
     COMPOSE_NO_NETWORK_PATH,
     COMPOSE_PREBUILT_PATH,
     COMPOSE_WINDOWS_KEEPALIVE_PATH,
+    RESOURCES_COMPOSE_NAME,
+    write_mounts_compose_file,
+    write_resources_compose_file,
 )
 from pier.models.environment_type import EnvironmentType
 from pier.models.task.config import EnvironmentConfig, TaskOS
-from pier.models.trial.config import ServiceVolumeConfig
+from pier.models.trial.config import ResourceMode, ServiceVolumeConfig
 from pier.models.trial.paths import EnvironmentPaths, TrialPaths
 from pier.utils.env import resolve_env_vars
 
@@ -78,8 +81,6 @@ class DockerEnvironmentEnvVars(BaseModel):
     env_agent_logs_path: str
     env_artifacts_path: str
     prebuilt_image_name: str | None = None
-    cpus: int = 1
-    memory: str = "1G"
 
     def to_env_dict(self, include_os_env: bool = True) -> dict[str, str]:
         env_dict = {} if not include_os_env else os.environ.copy()
@@ -178,12 +179,6 @@ class DockerEnvironment(BaseEnvironment):
             if self._is_windows_container
             else EnvironmentPaths()
         )
-        self._mounts_json = mounts_json
-        self._mounts_compose_path: Path | None = None
-        self._agent_build_context_dir: Path | None = None
-        self._egress_proxy_compose_path: Path | None = None
-        self._egress_proxy_env: dict[str, str] = {}
-
         # Select the platform-specific file-transfer and exec helpers.
         if self._is_windows_container:
             import uuid
@@ -197,6 +192,16 @@ class DockerEnvironment(BaseEnvironment):
 
             self._windows_container_name: str | None = None
             self._platform = UnixOps(self)
+
+        self._mounts_json = (
+            mounts_json if mounts_json is not None else self._default_log_mounts()
+        )
+        self._mounts_compose_path: Path | None = None
+        self._resources_compose_temp_dir: tempfile.TemporaryDirectory | None = None
+        self._resources_compose_path: Path | None = None
+        self._agent_build_context_dir: Path | None = None
+        self._egress_proxy_compose_path: Path | None = None
+        self._egress_proxy_env: dict[str, str] = {}
 
         install_fingerprint = (
             f"__agent-{self.agent_install_spec.fingerprint()}"
@@ -219,8 +224,6 @@ class DockerEnvironment(BaseEnvironment):
             env_agent_logs_path=str(self._env_paths.agent_dir),
             env_artifacts_path=str(self._env_paths.artifacts_dir),
             prebuilt_image_name=task_env_config.docker_image,
-            cpus=task_env_config.cpus,
-            memory=f"{task_env_config.memory_mb}M",
         )
         self._use_prebuilt = False
 
@@ -248,6 +251,25 @@ class DockerEnvironment(BaseEnvironment):
     def env_paths(self) -> EnvironmentPaths:
         return self._env_paths
 
+    def _default_log_mounts(self) -> list[ServiceVolumeConfig]:
+        return [
+            {
+                "type": "bind",
+                "source": self.trial_paths.verifier_dir.resolve().as_posix(),
+                "target": str(self._env_paths.verifier_dir),
+            },
+            {
+                "type": "bind",
+                "source": self.trial_paths.agent_dir.resolve().as_posix(),
+                "target": str(self._env_paths.agent_dir),
+            },
+            {
+                "type": "bind",
+                "source": self.trial_paths.artifacts_dir.resolve().as_posix(),
+                "target": str(self._env_paths.artifacts_dir),
+            },
+        ]
+
     @property
     def _uses_compose(self) -> bool:
         return self._environment_docker_compose_path.exists()
@@ -260,7 +282,14 @@ class DockerEnvironment(BaseEnvironment):
             preinstall_agents=True,
             windows=True,
             mounted=True,
+            docker_compose=True,
         )
+
+    @classmethod
+    def resource_capabilities(cls):
+        from pier.environments.capabilities import EnvironmentResourceCapabilities
+
+        return EnvironmentResourceCapabilities(cpu_limit=True, memory_limit=True)
 
     @property
     def _dockerfile_path(self) -> Path:
@@ -304,7 +333,10 @@ class DockerEnvironment(BaseEnvironment):
             else self._DOCKER_COMPOSE_BUILD_PATH
         )
 
-        paths = [self._DOCKER_COMPOSE_BASE_PATH, build_or_prebuilt]
+        paths = [self._DOCKER_COMPOSE_BASE_PATH]
+        if self._resources_compose_path:
+            paths.append(self._resources_compose_path)
+        paths.append(build_or_prebuilt)
 
         if self._is_windows_container:
             paths.append(self._DOCKER_COMPOSE_WINDOWS_KEEPALIVE_PATH)
@@ -385,11 +417,40 @@ class DockerEnvironment(BaseEnvironment):
 
     def _write_mounts_compose_file(self) -> Path:
         """Write a docker-compose override file with additional volume mounts."""
-        compose = {"services": {"main": {"volumes": self._mounts_json}}}
         path = self.trial_paths.trial_dir / "docker-compose-mounts.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(compose, indent=2))
-        return path
+        return write_mounts_compose_file(path, self._mounts_json or [])
+
+    def _write_resources_compose_file(self) -> Path:
+        self._cleanup_resources_compose_file()
+        self._resources_compose_temp_dir = tempfile.TemporaryDirectory()
+        path = (
+            Path(self._resources_compose_temp_dir.name)
+            / f"{self.session_id}-{RESOURCES_COMPOSE_NAME}"
+        )
+        return write_resources_compose_file(
+            path,
+            cpu_request=self._resource_request_value(
+                "cpu", auto_mode=ResourceMode.LIMIT
+            ),
+            cpu_limit=self._resource_limit_value("cpu", auto_mode=ResourceMode.LIMIT),
+            memory_request_mb=self._resource_request_value(
+                "memory", auto_mode=ResourceMode.LIMIT
+            ),
+            memory_limit_mb=self._resource_limit_value(
+                "memory", auto_mode=ResourceMode.LIMIT
+            ),
+        )
+
+    def _cleanup_resources_compose_file(self) -> None:
+        if self._resources_compose_temp_dir is None:
+            return
+        try:
+            self._resources_compose_temp_dir.cleanup()
+        except OSError as e:
+            self.logger.debug(f"Failed to remove resources compose file: {e}")
+        finally:
+            self._resources_compose_temp_dir = None
+            self._resources_compose_path = None
 
     def _validate_definition(self):
         if (
@@ -545,6 +606,7 @@ class DockerEnvironment(BaseEnvironment):
     async def start(self, force_build: bool):
         self._prepare_agent_build_context()
         self._prepare_egress_proxy_compose()
+        self._resources_compose_path = self._write_resources_compose_file()
 
         if self._mounts_json:
             self._mounts_compose_path = self._write_mounts_compose_file()
@@ -634,6 +696,7 @@ class DockerEnvironment(BaseEnvironment):
                 await self._run_docker_compose_command(["down"])
             except Exception as e:
                 self.logger.warning(f"Docker compose down failed: {e}")
+        self._cleanup_resources_compose_file()
 
     async def upload_file(self, source_path: Path | str, target_path: str):
         await self._platform.upload_file(source_path, target_path)

@@ -21,7 +21,10 @@ from pier.environments.agent_setup import (
     squid_bootstrap_command,
 )
 from pier.environments.base import BaseEnvironment, ExecResult
-from pier.environments.capabilities import EnvironmentCapabilities
+from pier.environments.capabilities import (
+    EnvironmentCapabilities,
+    EnvironmentResourceCapabilities,
+)
 from pier.environments.docker import (
     COMPOSE_BASE_PATH,
     COMPOSE_BUILD_PATH,
@@ -31,6 +34,7 @@ from pier.environments.docker import (
 from pier.environments.docker.docker import _sanitize_docker_image_name
 from pier.models.environment_type import EnvironmentType
 from pier.models.task.config import EnvironmentConfig
+from pier.models.trial.config import ResourceMode
 from pier.models.trial.paths import EnvironmentPaths, TrialPaths
 from pier.utils.env import resolve_env_vars
 from pier.utils.optional_import import MissingExtraError
@@ -42,6 +46,9 @@ try:
     _HAS_MODAL = True
 except ImportError:
     _HAS_MODAL = False
+
+_MODAL_DEFAULT_CPU_REQUEST_CORES = 0.125
+_MODAL_DEFAULT_MEMORY_REQUEST_MB = 128
 
 
 class _ModalStrategy:
@@ -376,9 +383,11 @@ class _ModalDinD(_ModalStrategy):
             "ENV_VERIFIER_LOGS_PATH": str(EnvironmentPaths.verifier_dir),
             "ENV_AGENT_LOGS_PATH": str(EnvironmentPaths.agent_dir),
             "ENV_ARTIFACTS_PATH": str(EnvironmentPaths.artifacts_dir),
-            "CPUS": str(self._env.task_env_config.cpus),
-            "MEMORY": f"{self._env.task_env_config.memory_mb}M",
         }
+        if (cpus := self._env._effective_cpus) is not None:
+            env_vars["CPUS"] = str(cpus)
+        if (memory_mb := self._env._effective_memory_mb) is not None:
+            env_vars["MEMORY"] = f"{memory_mb}M"
         if self._use_prebuilt and self._env.task_env_config.docker_image:
             env_vars["PREBUILT_IMAGE_NAME"] = self._env.task_env_config.docker_image
         return env_vars
@@ -752,6 +761,15 @@ class ModalEnvironment(BaseEnvironment):
     def type() -> EnvironmentType:
         return EnvironmentType.MODAL
 
+    @classmethod
+    def resource_capabilities(cls) -> EnvironmentResourceCapabilities:
+        return EnvironmentResourceCapabilities(
+            cpu_limit=True,
+            cpu_request=True,
+            memory_limit=True,
+            memory_request=True,
+        )
+
     @property
     def capabilities(self) -> EnvironmentCapabilities:
         return self._capabilities
@@ -828,6 +846,7 @@ class ModalEnvironment(BaseEnvironment):
             disable_internet=not self._compose_mode,
             filtered_egress=not self._compose_mode,
             preinstall_agents=not self._compose_mode,
+            docker_compose=True,
         )
         self._kwargs = kwargs
         if not _HAS_MODAL:
@@ -868,18 +887,30 @@ class ModalEnvironment(BaseEnvironment):
         """
         return "sh" if self._compose_mode else "bash"
 
-    def _cpu_config(self) -> tuple[int, int]:
+    def _cpu_config(self) -> int | float | tuple[int | float, int] | None:
         """Resolve CPU configuration for sandbox creation.
 
-        Returns a ``(request, limit)`` tuple with both values equal to
-        ``task_env_config.cpus`` so Modal enforces a hard CPU cap.
-        Modal's scalar form is a request-only value with a soft limit
-        that lets containers burst up to +16 cores — fine for general
-        workloads but breaks benchmark reproducibility, where the value
-        in ``task.toml`` should be the exact ceiling.
+        Modal's scalar form is request-only. Tuple form carries request and
+        limit, which Pier uses for stricter resource modes.
         """
-        cpus = self.task_env_config.cpus
+        cpus = self._effective_cpus
+        if cpus is None:
+            return None
+        if self._cpu_resource_mode == ResourceMode.REQUEST:
+            return cpus
+        if self._cpu_resource_mode == ResourceMode.LIMIT:
+            return (min(_MODAL_DEFAULT_CPU_REQUEST_CORES, cpus), cpus)
         return (cpus, cpus)
+
+    def _memory_config(self) -> int | tuple[int, int] | None:
+        memory_mb = self._effective_memory_mb
+        if memory_mb is None:
+            return None
+        if self._memory_resource_mode in (ResourceMode.AUTO, ResourceMode.REQUEST):
+            return memory_mb
+        if self._memory_resource_mode == ResourceMode.LIMIT:
+            return (min(_MODAL_DEFAULT_MEMORY_REQUEST_MB, memory_mb), memory_mb)
+        return (memory_mb, memory_mb)
 
     def _gpu_config(self) -> str | None:
         """Resolve GPU configuration string for sandbox creation.
@@ -894,7 +925,7 @@ class ModalEnvironment(BaseEnvironment):
         No ``!`` is appended when ``gpu_types`` is unset (the default
         ``any``), since "any" already means "accept whatever is available".
         """
-        if self.task_env_config.gpus <= 0:
+        if self._effective_gpus <= 0:
             return None
         gpu_type = "any"
         if self.task_env_config.gpu_types:
@@ -905,7 +936,7 @@ class ModalEnvironment(BaseEnvironment):
                 )
             # Pin to exact type to prevent silent Modal upgrades (e.g. H100 → H200).
             gpu_type = f"{self.task_env_config.gpu_types[0]}!"
-        return f"{gpu_type}:{self.task_env_config.gpus}"
+        return f"{gpu_type}:{self._effective_gpus}"
 
     def _secrets_config(self) -> list:
         secrets = [Secret.from_name(secret) for secret in self._secrets]
@@ -1035,6 +1066,13 @@ class ModalEnvironment(BaseEnvironment):
 
         sandbox_args = sandbox_command if sandbox_command is not None else ()
 
+        if (cpu := self._cpu_config()) is not None:
+            kwargs["cpu"] = cpu
+        if (memory := self._memory_config()) is not None:
+            kwargs["memory"] = memory
+        if (gpu := self._gpu_config()) is not None:
+            kwargs["gpu"] = gpu
+
         return await Sandbox.create.aio(
             *sandbox_args,
             app=self._app,
@@ -1042,9 +1080,6 @@ class ModalEnvironment(BaseEnvironment):
             timeout=self._sandbox_timeout,
             idle_timeout=self._sandbox_idle_timeout,
             name=self.session_id,
-            cpu=self._cpu_config(),
-            memory=self.task_env_config.memory_mb,
-            gpu=self._gpu_config(),
             block_network=block_network,
             cidr_allowlist=cidr_allowlist or self._egress_cidr_allowlist,
             secrets=self._secrets_config(),

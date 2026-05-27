@@ -87,7 +87,14 @@ class Verifier:
             ) from e
 
     def _resolve_tests(self) -> tuple[list[Path], Path, Path]:
-        task_os = self._task.config.environment.os
+        task_os = self._environment.task_os
+
+        if self._skip_tests_upload:
+            return (
+                [],
+                self._task.paths.tests_dir,
+                self._task.paths.test_path_for(task_os),
+            )
 
         if self._step_name is None:
             discovered = self._task.paths.discovered_test_path_for(task_os)

@@ -7,6 +7,7 @@ from typing import Any
 from pier.agents.installed.base import (
     BaseInstalledAgent,
     CliFlag,
+    NonZeroAgentExitCodeError,
     with_prompt_template,
 )
 from pier.agents.network import allowlist_from_urls, collect_url_values
@@ -151,6 +152,21 @@ class OpenCode(BaseInstalledAgent):
             except json.JSONDecodeError:
                 continue
         return events
+
+    def _error_messages(self) -> list[str]:
+        """Return messages from OpenCode error events in stdout."""
+        messages: list[str] = []
+        for event in self._parse_stdout():
+            if event.get("type") != "error":
+                continue
+            error = event.get("error")
+            if isinstance(error, dict):
+                data = error.get("data")
+                message = data.get("message") if isinstance(data, dict) else None
+                messages.append(str(message or error.get("name") or error))
+            else:
+                messages.append(str(error))
+        return messages
 
     def _convert_events_to_trajectory(
         self, events: list[dict[str, Any]]
@@ -493,14 +509,6 @@ class OpenCode(BaseInstalledAgent):
             keys.append("XAI_API_KEY")
         elif provider == "openrouter":
             keys.append("OPENROUTER_API_KEY")
-        else:
-            configured_providers = self._opencode_config.get("provider") or {}
-            if provider not in configured_providers:
-                raise ValueError(
-                    f"Unknown provider {provider}. If you believe this provider "
-                    "should be supported, provide agents[].kwargs.opencode_config.provider."
-                    f"{provider} in the job config."
-                )
 
         for key in keys:
             if value := self._get_env(key):
@@ -530,3 +538,8 @@ class OpenCode(BaseInstalledAgent):
             ),
             env=env,
         )
+
+        if messages := self._error_messages():
+            raise NonZeroAgentExitCodeError(
+                "OpenCode emitted error event(s): " + "; ".join(messages[:3])
+            )

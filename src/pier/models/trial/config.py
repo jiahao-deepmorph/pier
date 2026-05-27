@@ -1,4 +1,5 @@
 import warnings
+from enum import Enum
 from pathlib import Path
 from typing import Any, Literal, NotRequired, TypedDict
 from uuid import UUID
@@ -41,6 +42,14 @@ class ServiceVolumeConfig(TypedDict):
     image: NotRequired[ServiceVolumeImage]
 
 
+class ResourceMode(str, Enum):
+    AUTO = "auto"
+    LIMIT = "limit"
+    REQUEST = "request"
+    GUARANTEE = "guarantee"
+    IGNORE = "ignore"
+
+
 class AgentConfig(BaseModel):
     name: str | None = None
     import_path: str | None = None
@@ -68,14 +77,62 @@ class EnvironmentConfig(BaseModel):
     import_path: str | None = None
     force_build: bool = False
     delete: bool = True
+    cpu_enforcement_policy: ResourceMode = ResourceMode.AUTO
+    memory_enforcement_policy: ResourceMode = ResourceMode.AUTO
     override_cpus: int | None = None
     override_memory_mb: int | None = None
     override_storage_mb: int | None = None
     override_gpus: int | None = None
     suppress_override_warnings: bool = False
-    mounts_json: list[ServiceVolumeConfig] | None = None
+    mounts: list[ServiceVolumeConfig] | None = None
     env: dict[str, str] = Field(default_factory=dict)
     kwargs: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_mounts_json(cls, data: Any) -> Any:
+        """Accept the legacy ``mounts_json`` key as an alias for ``mounts``."""
+        if isinstance(data, dict) and "mounts_json" in data:
+            legacy = data.pop("mounts_json")
+            if "mounts" not in data:
+                warnings.warn(
+                    "EnvironmentConfig.mounts_json is deprecated; "
+                    "use 'mounts' instead.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                data["mounts"] = legacy
+        return data
+
+    @field_validator(
+        "cpu_enforcement_policy",
+        "memory_enforcement_policy",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_resource_mode(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.lower()
+        return value
+
+    @property
+    def mounts_json(self) -> list[ServiceVolumeConfig] | None:
+        """Deprecated alias for :attr:`mounts`."""
+        warnings.warn(
+            "EnvironmentConfig.mounts_json is deprecated; use 'mounts' instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.mounts
+
+    @mounts_json.setter
+    def mounts_json(self, value: list[ServiceVolumeConfig] | None) -> None:
+        warnings.warn(
+            "EnvironmentConfig.mounts_json is deprecated; use 'mounts' instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.mounts = value
 
     @field_serializer("env")
     @classmethod

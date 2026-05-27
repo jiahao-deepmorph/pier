@@ -18,6 +18,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
+from pier.environments.factory import EnvironmentFactory
 from pier.metrics.base import BaseMetric
 from pier.metrics.factory import MetricFactory
 from pier.metrics.mean import Mean
@@ -109,6 +110,7 @@ class Job:
     @classmethod
     async def create(cls, config: JobConfig) -> "Job":
         task_configs = await cls._resolve_task_configs(config)
+        EnvironmentFactory.validate_resource_policies(config.environment)
         metrics = await cls._resolve_metrics(config, task_configs)
 
         await cls._cache_tasks(task_configs)

@@ -6,6 +6,7 @@ import ipaddress
 import os
 import shlex
 import socket
+import tempfile
 from abc import abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Union
@@ -15,16 +16,22 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from pier.environments.agent_setup import dockerfile_install_commands
 from pier.environments.base import BaseEnvironment, ExecResult
-from pier.environments.capabilities import EnvironmentCapabilities
+from pier.environments.capabilities import (
+    EnvironmentCapabilities,
+    EnvironmentResourceCapabilities,
+)
 from pier.environments.docker import (
     COMPOSE_BASE_PATH,
     COMPOSE_BUILD_PATH,
     COMPOSE_NO_NETWORK_PATH,
     COMPOSE_PREBUILT_PATH,
+    RESOURCES_COMPOSE_NAME,
+    write_resources_compose_file,
 )
 from pier.environments.docker.docker import _sanitize_docker_image_name
 from pier.models.environment_type import EnvironmentType
 from pier.models.task.config import EnvironmentConfig
+from pier.models.trial.config import ResourceMode
 from pier.models.trial.paths import EnvironmentPaths, TrialPaths
 from pier.utils.env import resolve_env_vars
 from pier.utils.logger import logger
@@ -45,6 +52,11 @@ try:
     )
     from daytona._async.snapshot import SnapshotState
 
+    try:
+        from daytona import DaytonaConfig
+    except ImportError:
+        DaytonaConfig = None  # type: ignore[assignment]
+
     _HAS_DAYTONA = True
 except ImportError:
     _HAS_DAYTONA = False
@@ -58,10 +70,16 @@ DAYTONA_MAX_NETWORK_ALLOWLIST_CIDRS = 10
 
 
 def _daytona_preflight() -> None:
-    if not os.environ.get("DAYTONA_API_KEY"):
+    has_api_key = bool(os.environ.get("DAYTONA_API_KEY"))
+    has_jwt_auth = bool(
+        os.environ.get("DAYTONA_JWT_TOKEN")
+        and os.environ.get("DAYTONA_ORGANIZATION_ID")
+    )
+    if not (has_api_key or has_jwt_auth):
         raise SystemExit(
-            "Daytona requires DAYTONA_API_KEY to be set. "
-            "Please set this environment variable and try again."
+            "Daytona requires either DAYTONA_API_KEY, or both "
+            "DAYTONA_JWT_TOKEN and DAYTONA_ORGANIZATION_ID, to be set. "
+            "Please set the required environment variables and try again."
         )
 
 
@@ -138,6 +156,8 @@ class DaytonaClientManager:
         self._client_lock = asyncio.Lock()
         self._logger = logger.getChild(__name__)
         self._cleanup_registered = False
+        self._client_config_set = False
+        self._connection_pool_maxsize: int | None = None
 
     @classmethod
     async def get_instance(cls) -> "DaytonaClientManager":
@@ -147,11 +167,46 @@ class DaytonaClientManager:
                     cls._instance = cls()
         return cls._instance
 
+    async def configure(self, *, connection_pool_maxsize: int | None) -> None:
+        """Record Daytona client options for the process-wide client."""
+        async with self._client_lock:
+            if self._client_config_set:
+                if self._connection_pool_maxsize != connection_pool_maxsize:
+                    self._logger.warning(
+                        "Daytona client already configured with "
+                        "connection_pool_maxsize=%r; ignoring %r",
+                        self._connection_pool_maxsize,
+                        connection_pool_maxsize,
+                    )
+                return
+            if self._client is not None:
+                self._logger.warning(
+                    "Daytona client was built before explicit configuration; "
+                    "ignoring connection_pool_maxsize=%r",
+                    connection_pool_maxsize,
+                )
+                return
+            self._connection_pool_maxsize = connection_pool_maxsize
+            self._client_config_set = True
+
     async def get_client(self) -> AsyncDaytona:
         async with self._client_lock:
             if self._client is None:
                 self._logger.debug("Creating new AsyncDaytona client")
-                self._client = AsyncDaytona()
+                if self._client_config_set and DaytonaConfig is not None:
+                    self._client = AsyncDaytona(
+                        DaytonaConfig(
+                            connection_pool_maxsize=self._connection_pool_maxsize
+                        )
+                    )
+                elif self._client_config_set:
+                    self._logger.warning(
+                        "Installed Daytona SDK does not expose DaytonaConfig; "
+                        "ignoring client connection_pool_maxsize."
+                    )
+                    self._client = AsyncDaytona()
+                else:
+                    self._client = AsyncDaytona()
                 if not self._cleanup_registered:
                     atexit.register(self._cleanup_sync)
                     self._cleanup_registered = True
@@ -171,6 +226,8 @@ class DaytonaClientManager:
                 await self._client.close()
             finally:
                 self._client = None
+            self._client_config_set = False
+            self._connection_pool_maxsize = None
 
 
 class _DaytonaStrategy:
@@ -222,13 +279,10 @@ class _DaytonaStrategy:
 class _DaytonaDirect(_DaytonaStrategy):
     async def start(self, force_build: bool) -> None:
         env = self._env
-        resources = Resources(
-            cpu=env.task_env_config.cpus,
-            memory=env.task_env_config.memory_mb // 1024,
-            disk=env.task_env_config.storage_mb // 1024,
-        )
+        resources = env._sandbox_resources()
 
         env._client_manager = await DaytonaClientManager.get_instance()
+        await env._configure_daytona_client()
         daytona = await env._client_manager.get_client()
 
         snapshot_name: str | None = None
@@ -263,21 +317,29 @@ class _DaytonaDirect(_DaytonaStrategy):
             )
         elif force_build or not env.task_env_config.docker_image:
             image = env._with_agent_install(Image.from_dockerfile(env._dockerfile_path))
-            params = CreateSandboxFromImageParams(
-                image=image,
-                auto_delete_interval=env._auto_delete_interval,
-                auto_stop_interval=env._auto_stop_interval,
-                resources=resources,
+            kwargs = {
+                "image": image,
+                "auto_delete_interval": env._auto_delete_interval,
+                "auto_stop_interval": env._auto_stop_interval,
                 **env._network_params(),
+            }
+            if resources is not None:
+                kwargs["resources"] = resources
+            params = CreateSandboxFromImageParams(
+                **kwargs,
             )
         else:
             image = env._with_agent_install(Image.base(env.task_env_config.docker_image))
-            params = CreateSandboxFromImageParams(
-                image=image,
-                auto_delete_interval=env._auto_delete_interval,
-                auto_stop_interval=env._auto_stop_interval,
-                resources=resources,
+            kwargs = {
+                "image": image,
+                "auto_delete_interval": env._auto_delete_interval,
+                "auto_stop_interval": env._auto_stop_interval,
                 **env._network_params(),
+            }
+            if resources is not None:
+                kwargs["resources"] = resources
+            params = CreateSandboxFromImageParams(
+                **kwargs,
             )
 
         await env._create_sandbox(params=params)
@@ -364,6 +426,7 @@ class _DaytonaDinD(_DaytonaStrategy):
     _COMPOSE_DIR = "/pier/compose"
     _ENVIRONMENT_DIR = "/pier/environment"
     _LOGS_DIR = "/pier/logs"
+    _RESOURCES_COMPOSE_PATH = f"{_COMPOSE_DIR}/{RESOURCES_COMPOSE_NAME}"
 
     def __init__(self, env: "DaytonaEnvironment"):
         super().__init__(env)
@@ -411,9 +474,11 @@ class _DaytonaDinD(_DaytonaStrategy):
             "ENV_VERIFIER_LOGS_PATH": str(EnvironmentPaths.verifier_dir),
             "ENV_AGENT_LOGS_PATH": str(EnvironmentPaths.agent_dir),
             "ENV_ARTIFACTS_PATH": str(EnvironmentPaths.artifacts_dir),
-            "CPUS": str(self._env.task_env_config.cpus),
-            "MEMORY": f"{self._env.task_env_config.memory_mb}M",
         }
+        if (cpus := self._env._effective_cpus) is not None:
+            env_vars["CPUS"] = str(cpus)
+        if (memory_mb := self._env._effective_memory_mb) is not None:
+            env_vars["MEMORY"] = f"{memory_mb}M"
         if self._use_prebuilt and self._env.task_env_config.docker_image:
             env_vars["PREBUILT_IMAGE_NAME"] = self._env.task_env_config.docker_image
         return env_vars
@@ -432,6 +497,7 @@ class _DaytonaDinD(_DaytonaStrategy):
         )
         files = [
             f"{self._COMPOSE_DIR}/docker-compose-base.yaml",
+            self._RESOURCES_COMPOSE_PATH,
             f"{self._COMPOSE_DIR}/{build_or_prebuilt}",
             f"{self._ENVIRONMENT_DIR}/docker-compose.yaml",
         ]
@@ -497,13 +563,10 @@ class _DaytonaDinD(_DaytonaStrategy):
 
     async def start(self, force_build: bool) -> None:
         env = self._env
-        resources = Resources(
-            cpu=env.task_env_config.cpus,
-            memory=env.task_env_config.memory_mb // 1024,
-            disk=env.task_env_config.storage_mb // 1024,
-        )
+        resources = env._sandbox_resources()
 
         env._client_manager = await DaytonaClientManager.get_instance()
+        await env._configure_daytona_client()
         dind_image: str = env._kwargs.get("dind_image", "docker:28.3.3-dind")
         dind_snapshot: str | None = env._kwargs.get("dind_snapshot")
 
@@ -515,12 +578,16 @@ class _DaytonaDinD(_DaytonaStrategy):
                 **env._network_params(),
             )
         else:
-            params = CreateSandboxFromImageParams(
-                image=Image.base(dind_image),
-                auto_delete_interval=env._auto_delete_interval,
-                auto_stop_interval=env._auto_stop_interval,
-                resources=resources,
+            kwargs = {
+                "image": Image.base(dind_image),
+                "auto_delete_interval": env._auto_delete_interval,
+                "auto_stop_interval": env._auto_stop_interval,
                 **env._network_params(),
+            }
+            if resources is not None:
+                kwargs["resources"] = resources
+            params = CreateSandboxFromImageParams(
+                **kwargs,
             )
 
         await env._create_sandbox(params=params)
@@ -539,6 +606,7 @@ class _DaytonaDinD(_DaytonaStrategy):
             COMPOSE_NO_NETWORK_PATH,
         ):
             await env._sdk_upload_file(path, f"{self._COMPOSE_DIR}/{path.name}")
+        await self._stage_resources_compose_file()
 
         await env._sdk_upload_dir(env.environment_dir, self._ENVIRONMENT_DIR)
         await self._vm_exec(
@@ -566,6 +634,25 @@ class _DaytonaDinD(_DaytonaStrategy):
             )
 
         await self._wait_for_main_container()
+
+    async def _stage_resources_compose_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            local_path = write_resources_compose_file(
+                Path(tmp) / RESOURCES_COMPOSE_NAME,
+                cpu_request=self._env._resource_request_value(
+                    "cpu", auto_mode=ResourceMode.REQUEST
+                ),
+                cpu_limit=self._env._resource_limit_value(
+                    "cpu", auto_mode=ResourceMode.REQUEST
+                ),
+                memory_request_mb=self._env._resource_request_value(
+                    "memory", auto_mode=ResourceMode.REQUEST
+                ),
+                memory_limit_mb=self._env._resource_limit_value(
+                    "memory", auto_mode=ResourceMode.REQUEST
+                ),
+            )
+            await self._env._sdk_upload_file(local_path, self._RESOURCES_COMPOSE_PATH)
 
     async def stop(self, delete: bool) -> None:
         env = self._env
@@ -795,6 +882,14 @@ class DaytonaEnvironment(BaseEnvironment):
             disable_internet=True,
             filtered_egress=True,
             preinstall_agents=not self._compose_mode,
+            docker_compose=True,
+        )
+
+    @classmethod
+    def resource_capabilities(cls) -> EnvironmentResourceCapabilities:
+        return EnvironmentResourceCapabilities(
+            cpu_request=True,
+            memory_request=True,
         )
 
     @property
@@ -890,6 +985,27 @@ class DaytonaEnvironment(BaseEnvironment):
             "network_block_all": False,
             "network_allow_list": self._resolved_network_allow_list,
         }
+
+    async def _configure_daytona_client(self) -> None:
+        if self._client_manager is None:
+            raise RuntimeError(
+                "Client manager not initialized. This should never happen."
+            )
+        if "connection_pool_maxsize" not in self._kwargs:
+            return
+        await self._client_manager.configure(
+            connection_pool_maxsize=self._kwargs["connection_pool_maxsize"],
+        )
+
+    def _sandbox_resources(self) -> Resources | None:
+        kwargs = {}
+        if (cpus := self._effective_cpus) is not None:
+            kwargs["cpu"] = cpus
+        if (memory_mb := self._effective_memory_mb) is not None:
+            kwargs["memory"] = memory_mb // 1024
+        if (storage_mb := self._effective_storage_mb) is not None:
+            kwargs["disk"] = storage_mb // 1024
+        return Resources(**kwargs) if kwargs else None
 
     async def _pin_resolved_hosts(self) -> None:
         """Pin resolved allowlist domains so restricted sandboxes do not need DNS."""

@@ -24,6 +24,7 @@ from pier.models.task.paths import TaskPaths
 from pier.models.trial.config import (
     AgentConfig,
     EnvironmentConfig,
+    ResourceMode,
     TaskConfig,
 )
 from pier.models.trial.paths import TrialPaths
@@ -299,14 +300,9 @@ def start(
             "--retry-exclude",
             help="Exception types to NOT retry on (can be used multiple times)",
             rich_help_panel="Job Settings",
+            show_default=False,
         ),
-    ] = [
-        "AgentTimeoutError",
-        "VerifierTimeoutError",
-        "RewardFileNotFoundError",
-        "RewardFileEmptyError",
-        "VerifierOutputParseError",
-    ],
+    ] = None,
     agent_name: Annotated[
         AgentName | None,
         Option(
@@ -401,6 +397,24 @@ def start(
                 if EnvironmentConfig.model_fields['delete'].default
                 else '--no-delete'
             })",
+            rich_help_panel="Environment",
+            show_default=False,
+        ),
+    ] = None,
+    cpus: Annotated[
+        ResourceMode | None,
+        Option(
+            "--cpus",
+            help="How to apply task CPU resources: auto, limit, request, guarantee, or ignore.",
+            rich_help_panel="Environment",
+            show_default=False,
+        ),
+    ] = None,
+    memory: Annotated[
+        ResourceMode | None,
+        Option(
+            "--memory",
+            help="How to apply task memory resources: auto, limit, request, guarantee, or ignore.",
             rich_help_panel="Environment",
             show_default=False,
         ),
@@ -658,6 +672,10 @@ def start(
         config.environment.force_build = environment_force_build
     if environment_delete is not None:
         config.environment.delete = environment_delete
+    if cpus is not None:
+        config.environment.cpu_enforcement_policy = cpus
+    if memory is not None:
+        config.environment.memory_enforcement_policy = memory
     if override_cpus is not None:
         config.environment.override_cpus = override_cpus
     if override_memory_mb is not None:
