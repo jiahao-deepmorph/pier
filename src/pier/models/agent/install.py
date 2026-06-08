@@ -22,6 +22,8 @@ class AgentInstallSpec(BaseModel):
     verification_command: str | None = None
     cache_key: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # (local_path, container_path) pairs: copied into Docker build context + COPY instruction
+    build_context_dirs: list[tuple[str, str]] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _non_empty(self) -> "AgentInstallSpec":

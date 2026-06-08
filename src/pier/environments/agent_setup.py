@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import secrets
 import shlex
+import shutil
 from pathlib import Path
 
 from pier.models.agent.install import AgentInstallSpec, InstallStep
@@ -71,6 +73,10 @@ def write_agent_dockerfile(
             ),
         ]
     )
+    for local_path, container_path in install.build_context_dirs:
+        ctx_name = "bctx-" + hashlib.sha256(container_path.encode()).hexdigest()[:8]
+        shutil.copytree(local_path, build_dir / ctx_name, dirs_exist_ok=True)
+        dockerfile.append(f"COPY {ctx_name} {container_path}")
     dockerfile.extend(dockerfile_install_commands(install, user=user))
     dockerfile.append("")
     dockerfile_path.write_text("\n".join(dockerfile))
