@@ -275,6 +275,7 @@ def _response_output_text_reasoning_and_tool_calls(
 def convert_mini_swe_agent_to_atif(
     mini_swe_agent_trajectory: dict[str, Any],
     session_id: str,
+    agent_name: str = "mini-swe-agent",
 ) -> Trajectory:
     """
     Convert mini-swe-agent v2 trajectory format to ATIF format.
@@ -488,7 +489,7 @@ def convert_mini_swe_agent_to_atif(
     )
 
     agent = Agent(
-        name="mini-swe-agent",
+        name=agent_name,
         version=mini_version,
         model_name=model_name,
         extra={
@@ -511,6 +512,7 @@ def convert_and_save_trajectory(
     mini_swe_agent_trajectory_path: Path,
     atif_trajectory_path: Path,
     session_id: str,
+    agent_name: str = "mini-swe-agent",
 ) -> Trajectory:
     """
     Convert mini-swe-agent trajectory file to ATIF format and save it.
@@ -530,6 +532,7 @@ def convert_and_save_trajectory(
         atif_trajectory = convert_mini_swe_agent_to_atif(
             mini_swe_agent_trajectory,
             session_id,
+            agent_name=agent_name,
         )
 
         atif_trajectory_path.write_text(
@@ -554,6 +557,8 @@ class MiniSweAgent(BaseInstalledAgent):
     SUPPORTS_ATIF: bool = True
 
     CLI_FLAGS: ClassVar[list[CliFlag]] = []
+    _AGENT_PACKAGE: ClassVar[str] = "mini-swe-agent"
+    _AGENT_EXECUTABLE: ClassVar[str] = "mini-swe-agent"
     _LITELLM_MODEL_COST_MAP_URL = (
         "https://raw.githubusercontent.com/BerriAI/litellm/main/"
         "model_prices_and_context_window.json"
@@ -602,7 +607,7 @@ class MiniSweAgent(BaseInstalledAgent):
 
     def get_version_command(self) -> str | None:
         return (
-            '. "$HOME/.local/bin/env"; uv tool list 2>/dev/null | grep mini-swe-agent'
+            f'. "$HOME/.local/bin/env"; uv tool list 2>/dev/null | grep {self._AGENT_EXECUTABLE}'
         )
 
     def parse_version(self, stdout: str) -> str:
@@ -647,9 +652,9 @@ if ! grep -q 'export PATH="$HOME/.local/bin:$PATH"' "$HOME/.bashrc" 2>/dev/null;
   echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
 fi
 source "$HOME/.local/bin/env"
-uv tool install mini-swe-agent{version_spec}
+uv tool install {self._AGENT_PACKAGE}{version_spec}
 
-python_bin="$(head -n 1 "$(command -v mini-swe-agent)" | sed 's/^#!//')"
+python_bin="$(head -n 1 "$(command -v {self._AGENT_EXECUTABLE})" | sed 's/^#!//')"
 {install_extra_packages}
 "$python_bin" <<'PY'
 import json
@@ -677,7 +682,7 @@ except Exception as exc:
     )
 PY
 
-mini-swe-agent --help
+{self._AGENT_EXECUTABLE} --help
 """
         return AgentInstallSpec(
             agent_name=self.name(),
@@ -727,8 +732,8 @@ mini-swe-agent --help
 
     @property
     def _mini_swe_agent_trajectory_path(self) -> PurePosixPath:
-        """Path where mini-swe-agent writes its own trajectory format."""
-        return EnvironmentPaths.agent_dir / "mini-swe-agent.trajectory.json"
+        """Path where the agent writes its own trajectory format."""
+        return EnvironmentPaths.agent_dir / f"{self._AGENT_EXECUTABLE}.trajectory.json"
 
     @property
     def _atif_trajectory_path(self) -> PurePosixPath:
@@ -790,8 +795,7 @@ mini-swe-agent --help
         return config_flags
 
     def populate_context_post_run(self, context: AgentContext) -> None:
-        # Read the mini-swe-agent trajectory
-        mini_trajectory_path = self.logs_dir / "mini-swe-agent.trajectory.json"
+        mini_trajectory_path = self.logs_dir / f"{self._AGENT_EXECUTABLE}.trajectory.json"
 
         if not mini_trajectory_path.exists():
             self.logger.debug(
@@ -807,6 +811,7 @@ mini-swe-agent --help
                 mini_swe_agent_trajectory_path=mini_trajectory_path,
                 atif_trajectory_path=atif_trajectory_path,
                 session_id=session_id,
+                agent_name=self.name(),
             )
             if atif_trajectory.final_metrics:
                 populate_context_from_final_metrics(
@@ -891,10 +896,10 @@ mini-swe-agent --help
             environment,
             command=(
                 '. "$HOME/.local/bin/env"; '
-                f"mini-swe-agent --yolo --model={run_model_name} --task={escaped_instruction} "
+                f"{self._AGENT_EXECUTABLE} --yolo --model={run_model_name} --task={escaped_instruction} "
                 f"--output={self._mini_swe_agent_trajectory_path} {extra_flags}"
                 f"{config_flags}"
-                f"--exit-immediately 2>&1 </dev/null | tee /logs/agent/mini-swe-agent.txt"
+                f"--exit-immediately 2>&1 </dev/null | tee /logs/agent/{self._AGENT_EXECUTABLE}.txt"
             ),
             env=env,
         )
